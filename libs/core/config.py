@@ -38,7 +38,7 @@ DEFAULTS = {
     "model": {
         "backbone_type": 'convTransformer',
         "dependency_type": "DependencyBlock",
-        "backbone_arch": (2, 3, 5),
+        "backbone_arch": (2, 3, 5), #(2, 3, 5)
         # scale factor between pyramid levels
         "scale_factor": 2,
         # regression range for pyramid levels

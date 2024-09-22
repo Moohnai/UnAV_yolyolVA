@@ -11,7 +11,7 @@ from .losses import ctr_diou_loss_1d, sigmoid_focal_loss
 
 from ..utils import batched_nms
 
-
+ 
 class PtTransformerClsHead(nn.Module):
     """
     1D Conv heads for classification
@@ -211,6 +211,7 @@ class PtTransformer(nn.Module):
         self.num_classes = num_classes
         self.class_aware = class_aware
         self.use_dependency = use_dependency
+        # self.use_dependency = False
 
         self.max_seq_len = max_seq_len
         max_div_factor = 1
@@ -311,18 +312,20 @@ class PtTransformer(nn.Module):
 
         # forward the backbone
         feats_V, feats_A, masks = self.backbone(batched_inputs_V, batched_inputs_A, batched_masks)
+        #######m: feats_V: [8, 512, 224], ..., [8, 512, 7]; feats_A: [8, 512, 224], ..., [8, 512, 7]; masks: [8, 1, 224], ..., [8, 1, 7]
 
         #concat audio and visual output features (B, C, T)->(B, 2C, T)
         feats_AV = [torch.cat((V, A), 1) for _, (V, A) in enumerate(zip(feats_V, feats_A))]
+        #######m: feats_AV: [8, 1024, 224], ..., [8, 1024, 7]
 
         # dependency block
         if self.use_dependency:
             feats_AV,  _ = self.dependency_block(feats_AV, masks)
 
         # out_cls: List[B, #cls, T_i]
-        out_cls_logits = self.cls_head(feats_AV, masks)
+        out_cls_logits = self.cls_head(feats_AV, masks) ###m: (6=levels, #cls, 224), ..., (6, #cls, 7)
         # out_offset: List[B, 2, T_i]/[B, 2*cls, T_i]
-        out_offsets = self.reg_head(feats_AV, masks)
+        out_offsets = self.reg_head(feats_AV, masks) ###m: (6, 200, 224), ..., (6, 200, 7)
 
         # permute the outputs
         # out_cls: F List[B, #cls, T_i] -> F List[B, T_i, #cls]

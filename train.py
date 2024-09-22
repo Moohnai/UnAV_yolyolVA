@@ -3,7 +3,7 @@ import argparse
 import os
 import time
 import datetime
-from pprint import pprint
+from pprint import pprint 
 
 # torch imports
 import torch
@@ -211,7 +211,7 @@ if __name__ == '__main__':
     # the arg parser
     parser = argparse.ArgumentParser(
       description='Train a point-based transformer for action localization')
-    parser.add_argument('config', metavar='DIR',
+    parser.add_argument('--config', default='../../home/mona/UnAV_yolyol/configs/avel_unav100.yaml',
                         help='path to a config file')
     parser.add_argument('-p', '--print-freq', default=20, type=int,
                         help='print frequency (default: 20 iterations)')
@@ -219,7 +219,7 @@ if __name__ == '__main__':
                         help='checkpoint frequency (default: every 5 epochs)')
     parser.add_argument('--output', default='', type=str,
                         help='name of exp folder (default: none)')
-    parser.add_argument('--resume', default='', type=str, metavar='PATH',
+    parser.add_argument('--resume', default=None, type=str, metavar='PATH',
                         help='path to a checkpoint (default: none)')
     args = parser.parse_args()
-    main(args)
+    main(args) 
