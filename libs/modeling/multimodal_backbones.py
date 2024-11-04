@@ -365,7 +365,7 @@ class fusion_module(nn.Module):
         self.n_embd = n_embd
         self.scale_factor = 2
         # self.in_channels = [224, 112, 56]
-        self.in_channels = [224, 112, 56, 28, 14, 7]
+        self.in_channels = [224, 112, 56, 28, 14, 7]#[224, 112, 56, 28, 14, 7]
         self.upsample_feats_cat_first = True
 
         self.reduce_layers = nn.ModuleList()
@@ -397,7 +397,7 @@ class fusion_module(nn.Module):
 
         self.top_down_layers = nn.ModuleList()
         self.top_down_layers.append(MaxSigmoidCSPLayerWithTwoConv(
-            in_channels=1024,# 1280
+            in_channels=1024, #1280
             out_channels=512, # 640
             guide_channels=224, # 512
             embed_channels=256, # 320
@@ -406,7 +406,7 @@ class fusion_module(nn.Module):
             num_blocks=3, # 3
         ))
         self.top_down_layers.append(MaxSigmoidCSPLayerWithTwoConv(
-            in_channels=1024,# 1280
+            in_channels=1024, #1280
             out_channels=512, # 640
             guide_channels=224, # 512
             embed_channels=256, # 320
@@ -416,7 +416,7 @@ class fusion_module(nn.Module):
         ))
 
         self.top_down_layers.append(MaxSigmoidCSPLayerWithTwoConv(
-            in_channels=1024,# 1280
+            in_channels=1024, #1280
             out_channels=512, # 640
             guide_channels=224, # 512
             embed_channels=256, # 320
@@ -426,7 +426,7 @@ class fusion_module(nn.Module):
         ))
 
         self.top_down_layers.append(MaxSigmoidCSPLayerWithTwoConv(
-            in_channels=1024,# 1280
+            in_channels=1024, #1280
             out_channels=512, # 640
             guide_channels=224, # 512
             embed_channels=256, # 320
@@ -436,7 +436,7 @@ class fusion_module(nn.Module):
         ))
 
         self.top_down_layers.append(MaxSigmoidCSPLayerWithTwoConv(
-            in_channels=1024,# 1280
+            in_channels=1024, #1280
             out_channels=512, # 640
             guide_channels=224, # 512
             embed_channels=256, # 320
@@ -447,7 +447,7 @@ class fusion_module(nn.Module):
 
         self.bottom_up_layers = nn.ModuleList()
         self.bottom_up_layers.append(MaxSigmoidCSPLayerWithTwoConv(
-            in_channels=1024,# 1280
+            in_channels=1024, #1280
             out_channels=512, # 640
             guide_channels=224, # 512
             embed_channels=256, # 320
@@ -456,7 +456,7 @@ class fusion_module(nn.Module):
             num_blocks=3, # 3
         ))
         self.bottom_up_layers.append(MaxSigmoidCSPLayerWithTwoConv(
-            in_channels=1024,# 1280
+            in_channels=1024, #1280
             out_channels=512, # 640
             guide_channels=224, # 512
             embed_channels=256, # 320
@@ -465,17 +465,7 @@ class fusion_module(nn.Module):
             num_blocks=3, # 3
         ))
         self.bottom_up_layers.append(MaxSigmoidCSPLayerWithTwoConv(
-            in_channels=1024,# 1280
-            out_channels=512, # 640
-            guide_channels=224, # 512
-            embed_channels=256, # 320
-            num_heads=8 , # 10
-            expand_ratio= 0.5,
-            num_blocks=3, # 3
-        ))
-
-        self.bottom_up_layers.append(MaxSigmoidCSPLayerWithTwoConv(
-            in_channels=1024,# 1280
+            in_channels=1024, #1280
             out_channels=512, # 640
             guide_channels=224, # 512
             embed_channels=256, # 320
@@ -485,7 +475,17 @@ class fusion_module(nn.Module):
         ))
 
         self.bottom_up_layers.append(MaxSigmoidCSPLayerWithTwoConv(
-            in_channels=1024,# 1280
+            in_channels=1024, #1280
+            out_channels=512, # 640
+            guide_channels=224, # 512
+            embed_channels=256, # 320
+            num_heads=8 , # 10
+            expand_ratio= 0.5,
+            num_blocks=3, # 3
+        ))
+
+        self.bottom_up_layers.append(MaxSigmoidCSPLayerWithTwoConv(
+            in_channels=1024, #1280
             out_channels=512, # 640
             guide_channels=224, # 512
             embed_channels=256, # 320
@@ -716,7 +716,7 @@ class ConvTransformerBackbone(nn.Module):
 
         ######m: add downsample class ######
         self.downsample_list = nn.ModuleList()
-        for idx in range(5): #self.downsample_list
+        for idx in range(5): #self.downsample_list #(5)
             self.downsample_list.append(Downsample_pyramid_levels(n_embd, scale_factor))
 
         ######m: add fusion module ######
@@ -737,6 +737,7 @@ class ConvTransformerBackbone(nn.Module):
         # x_V/x_A: batch size, feature channel, sequence length,
         # mask: batch size, 1, sequence length (bool)
         B, C_V, T = x_V.size()
+        # B, C_V, T = x_V[0].shape
         mask_V = mask_A = mask
         # embedding network
         for idx in range(len(self.embd_V)):
@@ -771,7 +772,7 @@ class ConvTransformerBackbone(nn.Module):
             x_A, mask_A = self.self_att_A[idx](x_A, x_A, mask_A)
 
         
-
+ 
             
         ########### adding yolo-world fusion module with down-sampling ###########
         x_V_org = x_V
@@ -805,3 +806,302 @@ class ConvTransformerBackbone(nn.Module):
         # out_feats_A = tuple(out_feats_A)
 
         return out_feats_V, out_feats_A, out_masks_V
+    
+
+####m:add alignment module
+class MultiHeadAttention(nn.Module):
+    def __init__(self,
+                 dims,
+                 k_dims=None,
+                 v_dims=None,
+                 h_dims=None,
+                 o_dims=None,
+                 heads=8,
+                 p=0.1,
+                 bias=True):
+        super(MultiHeadAttention, self).__init__()
+
+        self._q_dims = dims
+        self._k_dims = k_dims or dims
+        self._v_dims = v_dims or dims
+        self._h_dims = h_dims or dims
+        self._o_dims = o_dims or dims
+        self._heads = heads
+        self._p = p
+        self._bias = bias
+        self._head_dims = self._h_dims // heads
+
+        self.q = nn.Linear(self._q_dims, self._h_dims, bias=bias)
+        self.k = nn.Linear(self._k_dims, self._h_dims, bias=bias)
+        self.v = nn.Linear(self._v_dims, self._h_dims, bias=bias)
+        self.m = nn.Linear(self._h_dims, self._o_dims, bias=bias)
+
+        self.drop1 = nn.Dropout(p)
+        self.drop2 = nn.Dropout(p)
+
+        self.reset_parameters()
+
+    def __repr__(self):
+        return ('{}(q_dims={}, k_dims={}, v_dims={}, h_dims={}, o_dims={}, '
+                'heads={}, p={}, bias={})'.format(self.__class__.__name__,
+                                                  self._q_dims, self._k_dims,
+                                                  self._v_dims, self._h_dims,
+                                                  self._o_dims, self._heads,
+                                                  self._p, self._bias))
+
+    def reset_parameters(self):
+        for m in (self.q, self.k, self.v, self.m):
+            nn.init.xavier_normal_(m.weight, gain=1.0)
+            if hasattr(m, 'bias') and m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    def forward(self, q, k=None, v=None, mask=None):
+        v = v if torch.is_tensor(v) else k if torch.is_tensor(k) else q
+        k = k if torch.is_tensor(k) else q
+
+        q = self.q(q).transpose(0, 1).contiguous()
+        k = self.k(k).transpose(0, 1).contiguous()
+        v = self.v(v).transpose(0, 1).contiguous()
+
+        b = q.size(1) * self._heads
+
+        q = q.view(-1, b, self._head_dims).transpose(0, 1)
+        k = k.view(-1, b, self._head_dims).transpose(0, 1)
+        v = v.view(-1, b, self._head_dims).transpose(0, 1)
+
+        att = torch.bmm(q, k.transpose(1, 2)) / self._head_dims**0.5
+
+        if mask is not None:
+            mask = torch.where(mask > 0, .0, float('-inf'))
+            mask = mask.repeat_interleave(self._heads, dim=0)
+            att += mask
+
+        att = att.softmax(-1)
+
+        if self.drop1 is not None:
+            att = self.drop1(att)
+
+        m = torch.bmm(att, v).transpose(0, 1).contiguous()
+        m = m.view(m.size(0), -1, self._h_dims).transpose(0, 1)
+        m = self.m(m)
+
+        if self.drop2 is not None:
+            m = self.drop2(m)
+
+        return m
+    
+class FFN(nn.Module):
+    def __init__(self, num_input, p=0.1, ratio=4):
+        super().__init__()
+        self.fc1 = nn.Linear(num_input, num_input * ratio)
+        self.act = nn.GELU()
+        self.drop1 = nn.Dropout(p)
+        self.fc2 = nn.Linear(num_input * ratio, num_input)
+        self.drop2 = nn.Dropout(p)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop1(x)
+        x = self.fc2(x)
+        x = self.drop2(x)
+        return x
+    
+class MultiWayTransformer(nn.Module):
+    def __init__(self, num_hidden, dropout_attn=0.1):
+        super().__init__()
+        self.norm1_fused = nn.LayerNorm(num_hidden)
+        self.attn_fusion = MultiHeadAttention(num_hidden, p=dropout_attn)
+
+        self.norm2_video = nn.LayerNorm(num_hidden)
+        self.ffn_video = FFN(num_hidden, p=dropout_attn, ratio=4)
+
+        self.norm2_text = nn.LayerNorm(num_hidden)
+        self.ffn_text = FFN(num_hidden, p=dropout_attn, ratio=4)
+    
+    def forward(self, fused, mask_fused, N_video, N_text):
+        residual = fused
+
+        fused = self.norm1_fused(fused)
+        fused = self.attn_fusion(fused, fused, fused, mask=mask_fused)
+        residual = residual + fused
+
+        residual_video, residual_text = torch.split(residual, [N_video, N_text], dim=1)
+
+        video = self.norm2_video(residual_video)
+        video = self.ffn_video(video)
+        residual_video = residual_video + video
+
+        text = self.norm2_text(residual_text)
+        text = self.ffn_text(text)
+        residual_text = residual_text + text
+
+        return residual_video, residual_text
+class Alignment(nn.Module):
+    def __init__(self, 
+                 video_dim, 
+                 audio_dim, 
+                 num_hidden=512, 
+                 dropout_video=0.0, 
+                 dropout_Audio=0.0,
+                 dropout_fc=0.0,
+                 dropout_attn=0.0,
+                 num_layers=2,
+                ):
+        super().__init__()    
+
+        self.proj_fc_video = nn.Sequential(
+                                nn.Linear(video_dim, num_hidden, bias=True),
+                                nn.Dropout(dropout_video),
+                            )
+        self.proj_fc_text = nn.Sequential(
+                                nn.Linear(audio_dim, num_hidden, bias=True),
+                                nn.Dropout(dropout_Audio),
+                            )
+        
+        self.pos_embed_video = nn.Parameter(torch.zeros(1, 5000, num_hidden))
+        self.pos_embed_text = nn.Parameter(torch.zeros(1, 5000, num_hidden))
+        # self.pos_embed_segment = nn.Parameter(torch.zeros(1, 5000, num_hidden))
+        self.type_video = nn.Parameter(torch.zeros(1, 1, num_hidden))
+        self.type_text = nn.Parameter(torch.zeros(1, 1, num_hidden))
+        self.cls_token_video = nn.Parameter(torch.zeros(1, 1, num_hidden))
+        self.cls_token_text = nn.Parameter(torch.zeros(1, 1, num_hidden))
+
+        self.cls_mask_video = torch.ones([1, 1])
+        self.cls_mask_text = torch.ones([1, 1])
+
+        self.multiway_list = nn.ModuleList([MultiWayTransformer(num_hidden, dropout_attn=dropout_attn)] * num_layers)
+
+        self.norm_video = nn.LayerNorm(num_hidden)
+        self.norm_text = nn.LayerNorm(num_hidden)
+
+        self.fc_video = nn.Sequential(
+            nn.Linear(num_hidden, num_hidden),
+            nn.ReLU(True),
+            nn.Dropout(dropout_fc),
+            nn.LayerNorm(num_hidden),
+        )
+        # self.fc_video_cls = nn.Linear(num_hidden, 1)
+        # self.fc_video_loc = nn.Linear(num_hidden, 2)
+        # self.fc_video_ctr = nn.Linear(num_hidden, 1)
+
+        self.fc_text = nn.Sequential(
+            nn.Linear(num_hidden, num_hidden),
+            nn.ReLU(True),
+            nn.Dropout(dropout_fc),
+            nn.LayerNorm(num_hidden),
+        )
+        self.fc_text_cls = nn.Linear(num_hidden, 1)
+        self.fc_text_loc = nn.Linear(num_hidden, 2)
+        self.fc_text_ctr = nn.Linear(num_hidden, 1)
+
+        self.num_layers = num_layers
+        
+        nn.init.trunc_normal_(self.pos_embed_video, std=.02)
+        nn.init.trunc_normal_(self.pos_embed_text, std=.02)
+        # nn.init.trunc_normal_(self.pos_embed_segment, std=.02)
+        nn.init.trunc_normal_(self.type_video, std=.02)
+        nn.init.trunc_normal_(self.type_text, std=.02)
+        nn.init.trunc_normal_(self.cls_token_video, std=.02)
+        nn.init.trunc_normal_(self.cls_token_text, std=.02)
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+     
+    ###m: 
+    @staticmethod
+    def video_audio_alignment_matrix(num_frame, num_sentence, frame_sentence_ratio=1):
+        video_to_text_mask = torch.zeros((num_frame, num_sentence), dtype=torch.long)
+        text_to_video_mask = torch.zeros((num_sentence, num_frame), dtype=torch.long)
+        for j in range(num_sentence):
+            start_frame = j * frame_sentence_ratio
+            end_frame = min((j + 1) * frame_sentence_ratio, num_frame)
+            video_to_text_mask[start_frame: end_frame, j] = 1
+            text_to_video_mask[j, start_frame : end_frame] = 1
+        return video_to_text_mask, text_to_video_mask
+
+    #
+    def forward(self, **kwargs):
+        video_list = kwargs['video']
+        text_list = kwargs['text']
+        mask_video_list = kwargs['mask_video']
+        mask_text_list = kwargs['mask_text']
+        # video_to_text_mask_list = kwargs['video_to_text_mask_list'] # time correspondence mask between video and text
+        # text_to_video_mask_list = kwargs['text_to_video_mask_list'] # time correspondence mask between text and video
+    
+        new_video_list = []
+        new_text_list = []
+        cls_video_list = []
+        cls_text_list = []
+        for video, text, mask_video, mask_text in zip(video_list, text_list, mask_video_list, mask_text_list):
+            video = video.transpose(1, 2)
+            text = text.transpose(1, 2)
+            mask_video = mask_video.transpose(1, 2).squeeze(2)
+            mask_text = mask_text.transpose(1, 2).squeeze(2)
+
+            B = video.shape[0]
+            video = self.proj_fc_video(video)
+            text = self.proj_fc_text(text)
+            residual_video = video
+            residual_text = text
+
+            # prepend the [CLSV] and [CLST] tokens to the video and text feature sequences
+            video = torch.cat([self.cls_token_video.expand(B, -1, -1), video], dim=1)
+            text = torch.cat([self.cls_token_text.expand(B, -1, -1), text], dim=1)
+            mask_video = torch.cat([self.cls_mask_video.expand(B, -1).to(mask_video), mask_video], dim=1) #[B, N_video]
+            mask_text = torch.cat([self.cls_mask_text.expand(B, -1).to(mask_text), mask_text], dim=1) #[B, N_text]
+
+            # add positional embedding and segment embedding
+            B, N_video, C = video.shape
+            B, N_text, C = text.shape
+            video = video + self.pos_embed_video[:, :N_video, :] + self.type_video
+            text = text + self.pos_embed_text[:, :N_text, :] + self.type_text #+ self.pos_embed_segment[:, :N_text, :]
+
+            # generate global attention mask with time correspondence
+            # N_video: 1 ([CLSV] token) + number of video frames with padding (since batchsize > 1)
+            # N_text: 1 ([CLST] token) + number of text sentences with padding (since batchsize > 1)
+            # N_video_valid: number of actual video frames for each data sample
+            # N_text_valid: number of actual text frames for each data sample
+            mask_fused = torch.zeros((B, N_video+N_text, N_video+N_text), dtype=torch.long).to(mask_video) # [B, N_video+N_text, N_video+N_text]
+            for i in range(B):
+                mask_fused[i, :N_video, :N_video] = mask_video[i].view(1, N_video).expand(N_video, -1) #[N_video, N_video]
+                mask_fused[i, N_video:, N_video:] = mask_text[i].view(1, N_text).expand(N_text, -1) #[N_text, N_text]
+
+                # generate video-to-text and text-to-video mask
+                video_to_text_mask, text_to_video_mask = self.video_audio_alignment_matrix(N_video-1, N_text-1, frame_sentence_ratio=1)
+                
+                N_video_valid, N_text_valid = video_to_text_mask.shape #[N_video_valid, N_text_valid]
+                mask_fused[i, 1:1+N_video_valid, 1+N_video:1+N_video+N_text_valid] = video_to_text_mask #[N_video_valid, N_text_valid] not consider the [CLS] token
+                mask_fused[i, 1+N_video:1+N_video+N_text_valid:, 1:1+N_video_valid] = text_to_video_mask #[N_text-1, N_video-1] not consider the [CLS] token
+                # pos_embed_segment_video = video_to_text_mask.to(torch.float32) @ self.pos_embed_segment[0, :N_text_valid, :] # [N_video_valid, C]
+                # video[i, 1:1+N_video_valid, :] = video[i, 1:1+N_video_valid, :] + pos_embed_segment_video
+
+            # multiway transformer layers
+            fused = torch.cat([video, text], dim=1)
+            for i in range(self.num_layers):
+                video, text = self.multiway_list[i](fused, mask_fused, N_video, N_text)
+                fused = torch.cat([video, text], dim=1)
+            cls_video, video = torch.split(video, [1, N_video-1], dim=1)
+            cls_text, text = torch.split(text, [1, N_text-1], dim=1)
+            
+            video = self.norm_video(residual_video + video)
+            text = self.norm_text(residual_text + text)
+            video = self.fc_video(video).transpose(1, 2)
+            text = self.fc_text(text).transpose(1, 2)
+
+            new_video_list.append(video)
+            new_text_list.append(text)
+
+            # cls_video_list.append(cls_video)
+            # cls_text_list.append(cls_text)
+
+        return new_video_list, new_text_list
+        # return cls_video_list, cls_text_list

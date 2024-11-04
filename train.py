@@ -211,7 +211,7 @@ if __name__ == '__main__':
     # the arg parser
     parser = argparse.ArgumentParser(
       description='Train a point-based transformer for action localization')
-    parser.add_argument('--config', default='../../home/mona/UnAV_yolyol/configs/avel_unav100.yaml',
+    parser.add_argument('--config', default='../../home/mona/UnAV_alignment_guided_yolyolVA/configs/avel_unav100.yaml',
                         help='path to a config file')
     parser.add_argument('-p', '--print-freq', default=20, type=int,
                         help='print frequency (default: 20 iterations)')

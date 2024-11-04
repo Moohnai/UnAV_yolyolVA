@@ -159,88 +159,96 @@ class ANETdetection(object):
         ground_truth_by_label = self.ground_truth.groupby('label')
         prediction_by_label = preds.groupby('label')
 
+        results = Parallel(n_jobs=self.num_workers)(
+            delayed(compute_average_precision_detection)(
+                ground_truth=ground_truth_by_label.get_group(cidx).reset_index(drop=True),
+                prediction=self._get_predictions_with_label(prediction_by_label, label_name, cidx),
+                tiou_thresholds=self.tiou_thresholds,
+                # ## M:
+                # gt_cls=label_name,
+                # pred_cls=cidx,
+                # ## M
+            ) for label_name, cidx in self.activity_index.items())
+
+        # ## M:
+        # self.activity_index = []
+        # for i in sorted(self.ground_truth['label'].unique()):
+        #     for j in sorted(self.ground_truth['label'].unique()):
+        #         self.activity_index.append((i, j))
+        # ## M
+
+        # ## M:
         # results = Parallel(n_jobs=self.num_workers)(
         #     delayed(compute_average_precision_detection)(
-        #         ground_truth=ground_truth_by_label.get_group(cidx).reset_index(drop=True),
+        #         ground_truth=ground_truth_by_label.get_group(label_name).reset_index(drop=True),
         #         prediction=self._get_predictions_with_label(prediction_by_label, label_name, cidx),
         #         tiou_thresholds=self.tiou_thresholds,
         #         ## M:
         #         gt_cls=label_name,
         #         pred_cls=cidx,
         #         ## M
-        #     ) for label_name, cidx in self.activity_index.items())
-
-        ## M:
-        self.activity_index = []
-        for i in sorted(self.ground_truth['label'].unique()):
-            for j in sorted(self.ground_truth['label'].unique()):
-                self.activity_index.append((i, j))
+        #     ) for (label_name, cidx) in self.activity_index)
         ## M
 
-        ## M:
-        results = Parallel(n_jobs=self.num_workers)(
-            delayed(compute_average_precision_detection)(
-                ground_truth=ground_truth_by_label.get_group(label_name).reset_index(drop=True),
-                prediction=self._get_predictions_with_label(prediction_by_label, label_name, cidx),
-                tiou_thresholds=self.tiou_thresholds,
-                ## M:
-                gt_cls=label_name,
-                pred_cls=cidx,
-                ## M
-            ) for (label_name, cidx) in self.activity_index)
-        ## M
+        for i, cidx in enumerate(self.activity_index.values()):
+                ap[:,cidx] = results[i]
 
-        # for i, cidx in enumerate(self.activity_index.values()):
-        #         ap[:,cidx] = results[i]
+        # ## M:
+        # for (i, res) in enumerate(results):
+        #     ## M:
+        #     gt, prd = res['activity_index']
+        #     ## M
+        #     if gt == prd:
+        #         ap[:,gt] = res['ap']
 
-        ## M:
-        for (i, res) in enumerate(results):
-            ## M:
-            gt, prd = res['activity_index']
-            ## M
-            if gt == prd:
-                ap[:,gt] = res['ap']
+        # # for each threshold, print 5 highest and lowest mAP in each class
+        # for i, tiou in enumerate(self.tiou_thresholds):
+        #     print(f"tIOU: {tiou}")
+        #     # sort the mAP
+        #     sorted_ap = np.argsort(ap[i,:])
+        #     # print the results
+        #     print(f"Threshold: {tiou}, \
+        #           top 5 classes with highest mAP: {sorted_ap[-5:]}, \
+        #           top 5 highest mAP: {ap[i,sorted_ap[-5:]]}, \
+        #           top 5 classes with lowest mAP: {sorted_ap[:5]}, \
+        #           top 5 lowest mAP: {ap[i,sorted_ap[:5]]}")
+        # ## M
 
-        # for each threshold, print 5 highest and lowest mAP in each class
-        for i, tiou in enumerate(self.tiou_thresholds):
-            print(f"tIOU: {tiou}")
-            # sort the mAP
-            sorted_ap = np.argsort(ap[i,:])
-            # print the results
-            print(f"Threshold: {tiou}, \
-                  top 5 classes with highest mAP: {sorted_ap[-5:]}, \
-                  top 5 highest mAP: {ap[i,sorted_ap[-5:]]}, \
-                  top 5 classes with lowest mAP: {sorted_ap[:5]}, \
-                  top 5 lowest mAP: {ap[i,sorted_ap[:5]]}")
-        ## M
+        # ## M:
+        # # create a confusion matrix
+        # confusion_matrix = np.zeros((len(self.tiou_thresholds), len(self.ground_truth['label'].unique()), (len(self.ground_truth['label'].unique()))))  
+        # # populate the confusion matrix
+        # for (i, res) in enumerate(results):
+        #     gt, prd = res['activity_index']
+        #     confusion_matrix[:,gt,prd] = res['tp']
 
-        ## M:
-        # create a confusion matrix
-        confusion_matrix = np.zeros((len(self.tiou_thresholds), len(self.ground_truth['label'].unique()), (len(self.ground_truth['label'].unique()))))  
-        # populate the confusion matrix
-        for (i, res) in enumerate(results):
-            gt, prd = res['activity_index']
-            confusion_matrix[:,gt,prd] = res['tp']
-
-        # plot confusion matrix
-        for i, tiou in enumerate(self.tiou_thresholds):
-            plt.figure(figsize=(10, 10))
-            ax = sns.heatmap(confusion_matrix[i].astype(int), cmap="Blues",
-                        xticklabels=[str(i) for i in range(len(self.ground_truth['label'].unique()))],
-                        yticklabels=[str(i) for i in range(len(self.ground_truth['label'].unique()))])
-            # Set the font size of x-tick and y-tick labels
-            plt.xticks(fontsize=3)  # X-tick labels font size
-            plt.yticks(fontsize=3)  # Y-tick labels font size
+        # # plot confusion matrix
+        # for i, tiou in enumerate(self.tiou_thresholds):
+        #     #normalize the confusion matrix by row, confusion_matrix[i] is a 2D array
+        #     for j in range(0,100):
+        #         print(f"number of true pisitive and false positives with thereshold {tiou}, class{j}: {confusion_matrix[i][j]}")
+        #     print("---------------------------------")
+        #     confusion_matrix[i] = confusion_matrix[i] / confusion_matrix[i].sum(axis=1)[:, np.newaxis]
+        #     plt.figure(figsize=(10, 10))
+        #     ax = sns.heatmap(confusion_matrix[i], cmap="Blues", vmin=0, vmax=confusion_matrix[i].max(),
+        #                 xticklabels=[str(i) for i in range(len(self.ground_truth['label'].unique()))],
+        #                 yticklabels=[str(i) for i in range(len(self.ground_truth['label'].unique()))])
+            
+        
+                        
+        #     # Set the font size of x-tick and y-tick labels
+        #     plt.xticks(fontsize=3)  # X-tick labels font size
+        #     plt.yticks(fontsize=3)  # Y-tick labels font size
             
 
-            # Optionally set labels
-            # ax.set_xticklabels(['Label 1', 'Label 2', 'Label 3'])
-            # ax.set_yticklabels(['Row 1', 'Row 2', 'Row 3'])
-            plt.ylabel('Actual')
-            plt.xlabel('Predicted')
-            plt.title(f'Confusion Matrix tIOU: {tiou}')
-            plt.savefig(f'confusion_matrix_tIOU_{tiou}_yolyolAV.png', dpi=900)
-            plt.close()
+        #     # Optionally set labels
+        #     # ax.set_xticklabels(['Label 1', 'Label 2', 'Label 3'])
+        #     # ax.set_yticklabels(['Row 1', 'Row 2', 'Row 3'])
+        #     plt.ylabel('Actual')
+        #     plt.xlabel('Predicted')
+        #     plt.title(f'Confusion Matrix tIOU: {tiou}_yolVA')
+        #     plt.savefig(f'confusion_matrix_tIOU_{tiou}_yolyolVA.png', dpi=900)
+        #     plt.close()
 
 
         return ap
@@ -298,10 +306,10 @@ def compute_average_precision_detection(
     ground_truth,
     prediction,
     tiou_thresholds=np.linspace(0.1, 0.5, 5),
-    ## M:
-    gt_cls=0,
-    pred_cls=0,
-    ## M
+    # ## M:
+    # gt_cls=0,
+    # pred_cls=0,
+    # ## M
 ):
     """Compute average precision (detection task) between ground truth and
     predictions data frames. If multiple predictions occurs for the same
@@ -364,11 +372,13 @@ def compute_average_precision_detection(
                 # Assign as true positive after the filters above.
                 tp[tidx, idx] = 1
                 lock_gt[tidx, this_gt.loc[jdx]['index']] = idx
-                ## M:
+                # ## M:
                 # if tiou_thr > 0.5:
-                #     print(f"video-`id: {this_pred['video-id']}, \
+                #     corr_or_not = "correct" if gt_cls == pred_cls else "incorrect"
+                #     print(f"Correct_or_not: {corr_or_not}, \
+                #             video-id: {this_pred['video-id']}, \
                 #             threshold: {tiou_thr}, \
-                #             tIOU: {tiou_sorted_idx} \
+                #             tIOU: {tiou_arr} \
                 #             pred_cls: {pred_cls}, \
                 #             gt_cls: {gt_cls}, \
                 #             score: {this_pred['score']}, \
@@ -378,7 +388,7 @@ def compute_average_precision_detection(
                 #             gt t-end: {this_gt.loc[jdx]['t-end']}, \
                 #             gt_cls: {this_gt.loc[jdx]['label']}, \
                 #         ")
-                ## M
+                # ## M
                 break
 
             if fp[tidx, idx] == 0 and tp[tidx, idx] == 0:
@@ -393,14 +403,14 @@ def compute_average_precision_detection(
     for tidx in range(len(tiou_thresholds)):
         ap[tidx] = interpolated_prec_rec(precision_cumsum[tidx,:], recall_cumsum[tidx,:])
 
-    # return ap
-    ## M:
-    return {
-        'ap': ap,
-        'activity_index': (gt_cls, pred_cls),
-        'tp': tp.sum(axis=1),
-    }
-    ## M
+    return ap
+    # ## M:
+    # return {
+    #     'ap': ap,
+    #     'activity_index': (gt_cls, pred_cls),
+    #     'tp': tp.sum(axis=1),
+    # }
+    # ## M
 
 
 def segment_iou(target_segment, candidate_segments):

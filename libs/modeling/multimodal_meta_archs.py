@@ -6,6 +6,7 @@ from torch.nn import functional as F
 
 from .models import (register_multimodal_meta_arch, make_multimodal_backbone, 
                     make_dependency_block)
+from .multimodal_backbones import Alignment
 from .blocks import MaskedConv1D, Scale, LayerNorm
 from .losses import ctr_diou_loss_1d, sigmoid_focal_loss
 
@@ -300,22 +301,67 @@ class PtTransformer(nn.Module):
         self.loss_normalizer = train_cfg['init_loss_norm']
         self.loss_normalizer_momentum = 0.9
 
+        ### m:
+        # self.alignment_list = nn.ModuleList()
+        # for l, level_dim in enumerate([224, 112, 56, 28, 14, 7]):
+        #     self.alignment_list.append(
+        #         Alignment(
+        #             video_dim=512,
+        #             audio_dim=512,
+        #         )
+        #     )
+        self.alignment = Alignment(
+                    video_dim=2048,#512
+                    audio_dim=128,#512
+                )
+
+        ###
     @property
     def device(self):
         # a hacky way to get the device type
         # will throw an error if parameters are on different devices
         return list(set(p.device for p in self.parameters()))[0]
+    
+    ###m:
+    @staticmethod
+    def param_count(model):
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    ###
 
     def forward(self, video_list):
         # batch the video list into feats (B, C, T) and masks (B, 1, T)
-        batched_inputs_V, batched_inputs_A, batched_masks = self.preprocessing(video_list)
+        batched_inputs_V, batched_inputs_A, batched_masks = self.preprocessing(video_list) #m:[32, 2048, 224], [32, 128, 224], [32, 1, 224]
 
+      ######m: Implementing alignment guided fusion
+        feats_V_aligned, feats_A_aligned = self.alignment(
+            video=[batched_inputs_V], 
+            text=[batched_inputs_A], 
+            mask_video=[batched_masks], 
+            mask_text=[batched_masks]
+        )
+
+
+        #########
         # forward the backbone
-        feats_V, feats_A, masks = self.backbone(batched_inputs_V, batched_inputs_A, batched_masks)
-        #######m: feats_V: [8, 512, 224], ..., [8, 512, 7]; feats_A: [8, 512, 224], ..., [8, 512, 7]; masks: [8, 1, 224], ..., [8, 1, 7]
+        # feats_V, feats_A, masks = self.backbone(batched_inputs_V, batched_inputs_A, batched_masks) 
+        #######m:input: tensor:[B,2048,224],[B,128,224],[B,1,224] 
+        # out feats_V(tuple): [B, 512, 224], ..., [B, 512, 7]; feats_A(tuple): [B, 512, 224], ..., [B, 512, 7]; masks: [B, 1, 224], ..., [B, 1, 7]
+ 
+        feats_V, feats_A, masks = self.backbone(feats_V_aligned[0], feats_A_aligned[0], batched_masks)
+
+        ####
+        # feats_V_aligned, feats_A_aligned = self.alignment(
+        #     video=feats_V, 
+        #     text=feats_A, 
+        #     mask_video=masks, 
+        #     mask_text=masks
+        # )
+        ####m: output: V:type:list, len=6, [B, 512, 224](tensor),...,[B,512,7] ---- A:type:list, len=6,...samw as V
 
         #concat audio and visual output features (B, C, T)->(B, 2C, T)
+        # feats_AV = [torch.cat((V, A), 1) for _, (V, A) in enumerate(zip(feats_V_aligned, feats_A_aligned))]
         feats_AV = [torch.cat((V, A), 1) for _, (V, A) in enumerate(zip(feats_V, feats_A))]
+
         #######m: feats_AV: [8, 1024, 224], ..., [8, 1024, 7]
 
         # dependency block
@@ -325,7 +371,7 @@ class PtTransformer(nn.Module):
         # out_cls: List[B, #cls, T_i]
         out_cls_logits = self.cls_head(feats_AV, masks) ###m: (6=levels, #cls, 224), ..., (6, #cls, 7)
         # out_offset: List[B, 2, T_i]/[B, 2*cls, T_i]
-        out_offsets = self.reg_head(feats_AV, masks) ###m: (6, 200, 224), ..., (6, 200, 7)
+        out_offsets = self.reg_head(feats_AV, masks) ###m: (8, 200, 224), ..., (8, 200, 7)
 
         # permute the outputs
         # out_cls: F List[B, #cls, T_i] -> F List[B, T_i, #cls]

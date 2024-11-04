@@ -36,7 +36,7 @@ def main(args):
         ckpt_file = ckpt_file_list[-1]
 
     ### M:
-    cfg['num_workers'] = 1
+    # cfg['num_workers'] = 1
     cfg['devices'] = ['cuda:1']
     # cfg['loader']['batch_size'] = 32
     ###
@@ -80,7 +80,7 @@ def main(args):
             val_dataset.json_file,
             val_dataset.split[0],
             tiou_thresholds = val_db_vars['tiou_thresholds'],
-            num_workers = cfg['num_workers'], ## M:
+            # num_workers = cfg['num_workers'], ## M:
         )
     else:
         output_file = os.path.join(os.path.split(ckpt_file)[0], 'eval_results.pkl')
@@ -108,9 +108,9 @@ if __name__ == '__main__':
     # the arg parser
     parser = argparse.ArgumentParser(
       description='Train a point-based transformer for action localization')
-    parser.add_argument('--config', type=str, default='../../home/mona/UnAV_yolyol/configs/avel_unav100.yaml',
+    parser.add_argument('--config', type=str, default='../../home/mona/UnAV_yolyolVA/configs/avel_unav100.yaml',
                         help='path to a config file')
-    parser.add_argument('--ckpt', type=str, default='../../home/mona/UnAV_yolyol/checkpoints/UnAv_yoyol_VA_w_temporalD/model_best.pth.tar',
+    parser.add_argument('--ckpt', type=str, default='../../home/mona/UnAV_yolyolVA/checkpoints/UnAv_yoyol_VA_w_temporalD/model_best.pth.tar',
                         help='path to a checkpoint')
     parser.add_argument('--topk', default=-1, type=int,
                         help='max number of output actions (default: -1)')

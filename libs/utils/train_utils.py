@@ -86,6 +86,9 @@ def make_optimizer(model, optimizer_config):
             elif pn.endswith('scale') and isinstance(m, (Scale, AffineDropPath)):
                 # corner case of our scale layer
                 no_decay.add(fpn)
+            ###m:
+            elif 'alignment' in pn:
+                decay.add(fpn)
 
     # validate that we considered every parameter
     param_dict = {pn: p for pn, p in model.named_parameters()}
@@ -242,6 +245,8 @@ class ModelEma(torch.nn.Module):
 
     def set(self, model):
         self._update(model, update_fn=lambda e, m: m)
+
+
 
 
 def train_one_epoch(

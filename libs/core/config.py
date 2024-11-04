@@ -6,7 +6,7 @@ DEFAULTS = {
     "init_rand_seed": 1234567891, 
     # dataset loader, specify the dataset here
     "dataset_name": "unav100",
-    "devices": ['cuda:0'], # default: single gpu
+    "devices": ['cuda:1'], # default: single gpu
     "train_split": ('train', ),
     "val_split": ('validation', ),
     "test_split": ('test', ),
@@ -32,7 +32,7 @@ DEFAULTS = {
     },
     "loader": {
         "batch_size": 8,
-        "num_workers": 4,
+        "num_workers": 8, #4
     },
     # network architecture
     "model": {
@@ -43,6 +43,8 @@ DEFAULTS = {
         "scale_factor": 2,
         # regression range for pyramid levels
         "regression_range": [(0, 4), (4, 8), (8, 16), (16, 32), (32, 64), (64, 10000)],
+        # "regression_range": [(0, 8), (8, 32), (32, 64), (64,10000)],
+
         # number of heads in self-attention
         "n_head": 4,
         # kernel size for embedding network
