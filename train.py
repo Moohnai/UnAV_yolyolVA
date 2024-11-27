@@ -1,9 +1,11 @@
 # python imports
 import argparse
+import glob
 import os
 import time
 import datetime
 from pprint import pprint 
+import wandb
 
 # torch imports
 import torch
@@ -18,7 +20,7 @@ from libs.datasets import make_dataset, make_data_loader
 from libs.modeling import make_multimodal_meta_arch
 from libs.utils import (train_one_epoch, valid_one_epoch, ANETdetection,
                         save_checkpoint, make_optimizer, make_scheduler,
-                        fix_random_seed, ModelEma)
+                        fix_random_seed, ModelEma, debugger_is_active)
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -35,6 +37,12 @@ def main(args):
     else:
         raise ValueError("Config file does not exist.")
     pprint(cfg)
+
+    model_name = f"{cfg['opt']['epochs']}_epochs\
+                    _inter_{cfg['model']['inter_contr_weight']}\
+                    _intra_{cfg['model']['intra_contr_weight']}\
+                    _score_v_{cfg['model']['score_V_weight']}\
+                    _score_a_{cfg['model']['score_A_weight']}"
 
     # prep for output folder (based on time stamp)
     if not os.path.exists(cfg['output_folder']):
@@ -69,28 +77,51 @@ def main(args):
 
     # data loaders
     train_loader = make_data_loader(
-        train_dataset, True, rng_generator, **cfg['loader'])
+        train_dataset, True, rng_generator, **cfg['loader'], **cfg['dataset'])
 
     if cfg['train_cfg']['evaluate']:
         val_dataset = make_dataset(
         cfg['dataset_name'], False, cfg['val_split'], **cfg['dataset']
     )
         val_loader = make_data_loader(
-        val_dataset, False, None, **cfg['loader']) 
+        val_dataset, False, None, **cfg['loader'], **cfg['dataset']) 
 
         # set up evaluator
         val_db_vars = val_dataset.get_attributes()
         det_eval = ANETdetection(
             val_dataset.json_file,
             val_dataset.split[0],
-            tiou_thresholds = val_db_vars['tiou_thresholds']
+            model_name,
+            tiou_thresholds = val_db_vars['tiou_thresholds'],
         )
 
     """3. create model, optimizer, and scheduler"""
     model = make_multimodal_meta_arch(cfg['model_name'], **cfg['model'])
 
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
     # not ideal for multi GPU training, ok for now
     model = nn.DataParallel(model, device_ids=cfg['devices'])
+
+    model.to(device)
+
+    ################
+    # ckpt = '/home/mona/ckpt/avel_unav100_DEL_new_harder_40epochs_reg=1_others=0.02,0.02,0.0001,0.0001_==/model_best.pth.tar'
+    # if ".pth.tar" in ckpt:
+    #     assert os.path.isfile(ckpt), "CKPT file does not exist!"
+    #     ckpt_file = ckpt
+    # else:
+    #     assert os.path.isdir(args.ckpt), "CKPT file folder does not exist!"
+    #     ckpt_file_list = sorted(glob.glob(os.path.join(args.ckpt, '*.pth.tar')))
+    #     ckpt_file = ckpt_file_list[-1]
+    # checkpoint = torch.load(
+    #     ckpt_file,
+    #     map_location = lambda storage, loc: storage.cuda(cfg['devices'][0])
+    # )
+    # # load ema model instead
+    # print("Loading from EMA model ...")
+    # model.load_state_dict(checkpoint['state_dict_ema'])
+    ################
     # optimizer
     optimizer = make_optimizer(model, cfg['opt'])
     # schedule
@@ -128,6 +159,23 @@ def main(args):
         pprint(cfg, stream=fid)
         fid.flush()
 
+
+###m:
+    # initialize wandb
+    if not debugger_is_active():
+        wandb.init(
+            project="DEL_UnAV",
+            group="training_alignment_contrastive_yolyolVA",
+            name=f"{cfg['opt']['epochs']}_epochs\
+                    _inter_{cfg['model']['inter_contr_weight']}\
+                    _intra_{cfg['model']['intra_contr_weight']}\
+                    _score_v_{cfg['model']['score_V_weight']}\
+                    _score_a_{cfg['model']['score_A_weight']}",
+            config=args,
+            )
+###
+
+
     """4. training / validation loop"""
     print("\nStart training model {:s} ...".format(cfg['model_name']))
 
@@ -139,7 +187,7 @@ def main(args):
     best_mAP = 0
     for epoch in range(args.start_epoch, max_epochs):
         # train for one epoch
-        train_one_epoch(
+        train_stats = train_one_epoch(
             train_loader,
             model,
             optimizer,
@@ -156,7 +204,7 @@ def main(args):
             if cfg['train_cfg']['evaluate']:
                 print("\nStart evaluating model {:s} ...".format(cfg['model_name']))
                 start = time.time()
-                avg_mAP = valid_one_epoch(
+                avg_mAP, val_stats = valid_one_epoch(
                     val_loader, 
                     model, epoch, 
                     evaluator=det_eval, 
@@ -176,7 +224,20 @@ def main(args):
                     }
                     save_states['state_dict_ema'] = model_ema.module.state_dict()
                     save_checkpoint(save_states, True, file_folder=ckpt_folder)
+
+                # log val stats
+                wandb_dict = {}
+                for key, value in val_stats.items():
+                    wandb_dict["val_epoch_"+key] = value
+                wandb.log(wandb_dict, step=epoch)
                     
+        ###m:
+        # wandb log train stats
+        wandb_dict = {}
+        for key, value in train_stats.items():
+            wandb_dict["train_epoch_"+key] = value
+        wandb.log(wandb_dict, step=epoch)
+        ###
         # save ckpt once in a while
         if (
             (epoch == max_epochs - 1) or
@@ -201,6 +262,31 @@ def main(args):
                 file_name='epoch_{:03d}.pth.tar'.format(epoch)
             )
 
+    # load the best model
+    print("Loading the best model ...")
+    best_ckpt = os.path.join(ckpt_folder, 'model_best.pth.tar')
+    assert os.path.isfile(best_ckpt), "Best model does not exist!"
+    checkpoint = torch.load(
+        best_ckpt,
+        map_location = lambda storage, loc: storage.cuda(cfg['devices'][0])
+    )
+    model.load_state_dict(checkpoint['state_dict'])
+
+    # evaluate on the validation set
+    if cfg['train_cfg']['evaluate']:
+        print("\nStart evaluating model {:s} ...".format(cfg['model_name']))
+        start = time.time()
+        avg_mAP = valid_one_epoch(
+            val_loader, 
+            model, epoch, 
+            evaluator=det_eval, 
+            tb_writer=tb_writer,
+            print_freq=args.print_freq
+            )
+        end = time.time()
+        print("evluation done! Total time: {:0.2f} sec".format(end - start))
+        print("Best mAP: {:0.4f}".format(best_mAP))    
+
     # wrap up
     tb_writer.close()
     print("All done!")
@@ -211,11 +297,11 @@ if __name__ == '__main__':
     # the arg parser
     parser = argparse.ArgumentParser(
       description='Train a point-based transformer for action localization')
-    parser.add_argument('--config', default='../../home/mona/UnAV_alignment_guided_yolyolVA/configs/avel_unav100.yaml',
+    parser.add_argument('--config', default='/home/mona/UnAV_alignment_Contrastive_yolyolVA/configs/avel_unav100.yaml',
                         help='path to a config file')
     parser.add_argument('-p', '--print-freq', default=20, type=int,
                         help='print frequency (default: 20 iterations)')
-    parser.add_argument('-c', '--ckpt-freq', default=5, type=int,
+    parser.add_argument('-c', '--ckpt-freq', default=20, type=int,
                         help='checkpoint frequency (default: every 5 epochs)')
     parser.add_argument('--output', default='', type=str,
                         help='name of exp folder (default: none)')
@@ -223,3 +309,5 @@ if __name__ == '__main__':
                         help='path to a checkpoint (default: none)')
     args = parser.parse_args()
     main(args) 
+    ###m:
+    wandb.finish()

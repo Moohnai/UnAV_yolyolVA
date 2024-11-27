@@ -115,6 +115,7 @@ class ANETdetection(object):
         self,
         ant_file,
         split=None,
+        model_name=None,
         tiou_thresholds=np.linspace(0.1, 0.5, 5),
         label='label_id',
         label_offset=0,

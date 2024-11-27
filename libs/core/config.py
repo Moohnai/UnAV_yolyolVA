@@ -6,7 +6,8 @@ DEFAULTS = {
     "init_rand_seed": 1234567891, 
     # dataset loader, specify the dataset here
     "dataset_name": "unav100",
-    "devices": ['cuda:1'], # default: single gpu
+    "devices": ['cuda:0', 'cuda:1', 'cuda:2', 'cuda:3'], # default: multi gpu
+    # "devices": ['cuda:0'], # default: single gpu
     "train_split": ('train', ),
     "val_split": ('validation', ),
     "test_split": ('test', ),
@@ -63,6 +64,14 @@ DEFAULTS = {
         "head_with_ln": True,
         # disable abs position encoding (added to input embedding)
         "use_abs_pe": False,
+        # intra-contrastive loss weight
+        "intra_contr_weight": 0.0,
+        # inter-contrastive loss weight
+        "inter_contr_weight": 0.02,
+        # video score loss weight
+        "score_V_weight": 0.0001,
+        # audio score loss weight
+        "score_A_weight": 0.0001,
     },
     "train_cfg": {
         # on reg_loss, use -1 to enable auto balancing

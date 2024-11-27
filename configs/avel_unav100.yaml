@@ -1,7 +1,7 @@
 dataset_name: unav100
 dataset: {
-  json_file: ../../mnt/welles/scratch/mona/unav100/unav100_annotations.json,
-  feat_folder: ../../mnt/welles/scratch/datasets/unav100/all_features, # mix all features together
+  json_file: /mnt/welles/scratch/mona/unav100/unav100_annotations.json,
+  feat_folder: /mnt/welles/scratch/datasets/unav100/all_features, # mix all features together
   file_prefix: ~,
   file_ext: .npy,
   max_seq_len: 224,  
@@ -12,6 +12,10 @@ model: {
   use_abs_pe: True, 
   class_aware: True, 
   use_dependency: False, #True
+  intra_contr_weight: 0.0,
+  inter_contr_weight: 0.2,
+  score_V_weight: 0.001,
+  score_A_weight: 0.001,
 }
 opt: {
   learning_rate: 0.0001, 
@@ -20,12 +24,12 @@ opt: {
   warmup_epochs: 5, 
 }
 loader: {
-  batch_size: 32, #16
+  batch_size: 64, #16
 }
 train_cfg: {
   loss_weight: 1, 
   evaluate: True,
-  eval_freq: 1,
+  eval_freq: 10,
 }
 test_cfg: {
   pre_nms_topk: 2000,

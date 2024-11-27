@@ -1,4 +1,5 @@
 import os
+import sys
 import shutil
 import time
 import pickle
@@ -89,6 +90,8 @@ def make_optimizer(model, optimizer_config):
             ###m:
             elif 'alignment' in pn:
                 decay.add(fpn)
+            elif 'contrastive' in pn:
+                no_decay.add(fpn)
 
     # validate that we considered every parameter
     param_dict = {pn: p for pn, p in model.named_parameters()}
@@ -273,10 +276,16 @@ def train_one_epoch(
     print("\n[Train]: Epoch {:d} started".format(curr_epoch))
     start = time.time()
     for iter_idx, video_list in enumerate(train_loader, 0):
+        # if iter_idx == 21:
+        #     break
         # zero out optim
         optimizer.zero_grad(set_to_none=True)
         # forward / backward the model
         losses = model(video_list)
+        if len(model.device_ids) > 1:
+            for k, v in losses.items():
+                if v is not None:
+                    losses[k] = v.mean()
         losses['final_loss'].backward()
         # gradient cliping (to stabilize training if necessary)
         if clip_grad_l2norm > 0.0:
@@ -356,7 +365,14 @@ def train_one_epoch(
     # finish up and print
     lr = scheduler.get_last_lr()[0]
     print("[Train]: Epoch {:d} finished with lr={:.8f}\n".format(curr_epoch, lr))
-    return
+    # return
+    return {'cls_loss':losses['cls_loss'], 
+            'reg_loss':losses['reg_loss'], 
+            'final_loss':losses['final_loss'],
+            'inter_contr_loss':losses['inter_contr_loss'],
+            'intra_contr_loss':losses['intra_contr_loss'],
+            'score_loss_video':losses['score_loss_video'],
+            'score_loss_text':losses['score_loss_text']}
 
 
 def valid_one_epoch(
@@ -391,20 +407,28 @@ def valid_one_epoch(
     for iter_idx, video_list in enumerate(val_loader, 0):
         # forward the model (wo. grad)
         with torch.no_grad():
-            output = model(video_list)
+            output, losses = model(video_list)
+
+            if len(model.device_ids) > 1:
+                for k, v in losses.items():
+                    if v is not None:
+                        losses[k] = v.mean()
+
+            # Replace the video_id with the original video_id
+            output['video_id'] = video_list['video_id']
 
             # upack the results into ANet format
-            num_vids = len(output)
+            num_vids = len(output['video_id'])
             for vid_idx in range(num_vids):
-                if output[vid_idx]['segments'].shape[0] > 0:
+                if output['segments'][vid_idx].shape[0] > 0:
                     results['video-id'].extend(
-                        [output[vid_idx]['video_id']] *
-                        output[vid_idx]['segments'].shape[0]
+                        [output['video_id'][vid_idx]] *
+                        output['segments'][vid_idx].shape[0]
                     )
-                    results['t-start'].append(output[vid_idx]['segments'][:, 0])
-                    results['t-end'].append(output[vid_idx]['segments'][:, 1])
-                    results['label'].append(output[vid_idx]['labels'])
-                    results['score'].append(output[vid_idx]['scores'])
+                    results['t-start'].append(output['segments'][vid_idx][:, 0])
+                    results['t-end'].append(output['segments'][vid_idx][:, 1])
+                    results['label'].append(output['labels'][vid_idx])
+                    results['score'].append(output['scores'][vid_idx])
 
         # printing
         if (iter_idx != 0) and iter_idx % (print_freq) == 0:
@@ -419,10 +443,10 @@ def valid_one_epoch(
                   iter_idx, len(val_loader), batch_time=batch_time))
 
     # gather all stats and evaluate
-    results['t-start'] = torch.cat(results['t-start']).numpy()
-    results['t-end'] = torch.cat(results['t-end']).numpy()
-    results['label'] = torch.cat(results['label']).numpy()
-    results['score'] = torch.cat(results['score']).numpy()
+    results['t-start'] = torch.cat(results['t-start']).detach().cpu().numpy()
+    results['t-end'] = torch.cat(results['t-end']).detach().cpu().numpy()
+    results['label'] = torch.cat(results['label']).detach().cpu().numpy()
+    results['score'] = torch.cat(results['score']).detach().cpu().numpy()
 
     if evaluator is not None:
         if (ext_score_file is not None) and isinstance(ext_score_file, str):
@@ -439,4 +463,8 @@ def valid_one_epoch(
     if tb_writer is not None:
         tb_writer.add_scalar('validation/mAP', mAP, curr_epoch)
 
-    return mAP
+    return mAP, losses
+
+def debugger_is_active() -> bool:
+    """Return if the debugger is currently active"""
+    return hasattr(sys, 'gettrace') and sys.gettrace() is not None

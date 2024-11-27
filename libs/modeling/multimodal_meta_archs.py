@@ -12,7 +12,83 @@ from .losses import ctr_diou_loss_1d, sigmoid_focal_loss
 
 from ..utils import batched_nms
 
+import numpy as np
+
  
+
+class NCE(nn.Module):
+    def __init__(self):
+        super(NCE, self).__init__()
+        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        
+    def forward(self, q, k, neg, device='cuda:0'):
+        q = F.normalize(q, dim=1) #[1, C]
+        k = F.normalize(k, dim=1) #[1, C]
+        neg = F.normalize(neg, dim=1) #[T, C]
+        l_pos = q @ k.T #[1, 1]
+        l_neg = q @ neg.T #[1, T]
+        logits = torch.cat([l_pos, l_neg], dim=1) #[1, 1 + T]
+        logits *= self.logit_scale #[1, 1 + T]
+        
+        labels = torch.zeros(logits.shape[0], dtype=torch.long).to(device)
+        loss = F.cross_entropy(logits, labels)
+        return loss
+
+class Dual_Contrastive_Loss(nn.Module):
+    def __init__(self, args=None):
+        super().__init__()
+        self.logit_scale_inter = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        
+        self.NCE_video = NCE()
+        self.NCE_text = NCE()
+        
+    def forward(self, contrastive_pairs):
+        if len(contrastive_pairs) == 0:
+            return torch.zeros(1).cuda(), torch.zeros(1).cuda()
+        cls_video = contrastive_pairs['cls_video']
+        cls_text = contrastive_pairs['cls_text']
+        key_video_list = contrastive_pairs['key_video_list']
+        nonkey_video_list = contrastive_pairs['nonkey_video_list']
+        key_text_list = contrastive_pairs['key_text_list']
+        nonkey_text_list = contrastive_pairs['nonkey_text_list']
+            
+        B = cls_video.shape[0]
+        device = cls_video.device
+        
+        ########## Inter-Sample Contrastive Loss ##########
+        cls_video = F.normalize(cls_video.squeeze(1), dim=1) #[B, C]
+        cls_text = F.normalize(cls_text.squeeze(1), dim=1) #[B, C]
+
+        # cosine similarity as logits
+        logits_per_video = self.logit_scale_inter.exp() * cls_video @ cls_text.t() #[B, B]
+        logits_per_text = logits_per_video.t() #[B, B]
+        
+        target = torch.arange(B).to(device)
+        inter_contrastive_loss_video = F.cross_entropy(logits_per_video, target)
+        inter_contrastive_loss_text = F.cross_entropy(logits_per_text, target)
+        inter_contrastive_loss = (inter_contrastive_loss_video + inter_contrastive_loss_text) / 2
+        
+        ########## Intra-Sample Contrastive Loss ##########
+        intra_contrastive_loss = 0
+        for i in range(B):
+            intra_contrastive_loss_video = self.NCE_video(
+                torch.mean(key_video_list[i], dim=0, keepdim=True),
+                torch.mean(key_text_list[i], dim=0, keepdim=True),
+                nonkey_video_list[i],
+                device
+            )
+            intra_contrastive_loss_text = self.NCE_text(
+                torch.mean(key_text_list[i], dim=0, keepdim=True),
+                torch.mean(key_video_list[i], dim=0, keepdim=True),
+                nonkey_text_list[i],
+                device
+            )
+            intra_contrastive_loss += (intra_contrastive_loss_video + intra_contrastive_loss_text) / 2
+        intra_contrastive_loss /= B
+        
+        return inter_contrastive_loss, intra_contrastive_loss
+    
+
 class PtTransformerClsHead(nn.Module):
     """
     1D Conv heads for classification
@@ -203,6 +279,10 @@ class PtTransformer(nn.Module):
         test_cfg,              # other cfg for testing
         class_aware,           # if to use class-aware regression
         use_dependency,        # if to use dependency block
+        intra_contr_weight,    # intra-contrastive loss weight
+        inter_contr_weight,    # inter-contrastive loss weight
+        score_V_weight,        # video score loss weight
+        score_A_weight,        # audio score loss weight
     ):
         super().__init__()
         self.fpn_strides = [scale_factor**i for i in range(backbone_arch[-1]+1)]
@@ -224,6 +304,10 @@ class PtTransformer(nn.Module):
 
         # training time config
         self.train_loss_weight = train_cfg['loss_weight']
+        self.inter_contr_weight = inter_contr_weight#0.02
+        self.intra_contr_weight = intra_contr_weight#0
+        self.score_V_weight = score_V_weight#0.0001
+        self.score_T_weight = score_A_weight#0.0001
         self.train_cls_prior_prob = train_cfg['cls_prior_prob']
         self.train_dropout = train_cfg['dropout']
         self.train_droppath = train_cfg['droppath']
@@ -314,13 +398,15 @@ class PtTransformer(nn.Module):
                     video_dim=2048,#512
                     audio_dim=128,#512
                 )
+        
+        self.contrastive_losses = Dual_Contrastive_Loss()
 
         ###
     @property
     def device(self):
         # a hacky way to get the device type
         # will throw an error if parameters are on different devices
-        return list(set(p.device for p in self.parameters()))[0]
+        return list(set(p.device for name, p in self.named_parameters()))[0]
     
     ###m:
     @staticmethod
@@ -330,14 +416,23 @@ class PtTransformer(nn.Module):
 
     def forward(self, video_list):
         # batch the video list into feats (B, C, T) and masks (B, 1, T)
-        batched_inputs_V, batched_inputs_A, batched_masks = self.preprocessing(video_list) #m:[32, 2048, 224], [32, 128, 224], [32, 1, 224]
+        # batched_inputs_V, batched_inputs_A, batched_masks, batched_scores, batched_start_end_idx, batched_m_labels = self.preprocessing(video_list) #m:[32, 2048, 224], [32, 128, 224], [32, 1, 224]
+        batched_inputs_V = video_list['visual']
+        batched_inputs_A = video_list['audio']
+        batched_masks = video_list['mask']
+        batched_scores = video_list['scores']
+        batched_start_end_idx = video_list['start_end']
+        batched_m_labels = video_list['m_labels']
 
       ######m: Implementing alignment guided fusion
-        feats_V_aligned, feats_A_aligned = self.alignment(
+        feats_V_aligned, feats_A_aligned, contrastive_pairs = self.alignment(
             video=[batched_inputs_V], 
             text=[batched_inputs_A], 
             mask_video=[batched_masks], 
-            mask_text=[batched_masks]
+            mask_text=[batched_masks],
+            m_start_end = batched_start_end_idx,
+            m_scores_gt = batched_scores,
+            m_labels = batched_m_labels,
         )
 
 
@@ -346,7 +441,9 @@ class PtTransformer(nn.Module):
         # feats_V, feats_A, masks = self.backbone(batched_inputs_V, batched_inputs_A, batched_masks) 
         #######m:input: tensor:[B,2048,224],[B,128,224],[B,1,224] 
         # out feats_V(tuple): [B, 512, 224], ..., [B, 512, 7]; feats_A(tuple): [B, 512, 224], ..., [B, 512, 7]; masks: [B, 1, 224], ..., [B, 1, 7]
- 
+        
+        
+        ####m: alignment to yolo
         feats_V, feats_A, masks = self.backbone(feats_V_aligned[0], feats_A_aligned[0], batched_masks)
 
         ####
@@ -386,20 +483,24 @@ class PtTransformer(nn.Module):
         # fpn_masks: F list[B, 1, T_i] -> F List[B, T_i]
         fpn_masks = [x.squeeze(1) for x in masks]
 
+        # generate segment/lable List[N x 2] / List[N] with length = B
+        # assert video_list[0]['segments'] is not None, "GT action labels does not exist"
+        # assert video_list[0]['labels'] is not None, "GT action labels does not exist"
+        # gt_offsets = [x['gt_offsets'] for x in video_list]
+        # gt_cls_labels = [x['gt_cls_labels'] for x in video_list]
+        gt_offsets = video_list['gt_offsets']
+        gt_cls_labels = video_list['gt_cls_labels']
+
+        # compute the loss and return
+        losses = self.losses(
+            fpn_masks,
+            out_cls_logits, out_offsets,
+            gt_cls_labels, gt_offsets, 
+            contrastive_pairs
+        )
+
         # return loss during training
         if self.training:
-            # generate segment/lable List[N x 2] / List[N] with length = B
-            assert video_list[0]['segments'] is not None, "GT action labels does not exist"
-            assert video_list[0]['labels'] is not None, "GT action labels does not exist"
-            gt_offsets = [x['gt_offsets'] for x in video_list]
-            gt_cls_labels = [x['gt_cls_labels'] for x in video_list]
-
-            # compute the loss and return
-            losses = self.losses(
-                fpn_masks,
-                out_cls_logits, out_offsets,
-                gt_cls_labels, gt_offsets
-            )
             return losses
 
         else:
@@ -409,7 +510,7 @@ class PtTransformer(nn.Module):
                 video_list, fpn_masks,
                 out_cls_logits, out_offsets
             )
-            return results
+            return results, losses
 
     @torch.no_grad()
     def preprocessing(self, video_list, padding_val=0.0):
@@ -420,6 +521,31 @@ class PtTransformer(nn.Module):
         feats_audio = [x['feats']['audio'] for x in video_list]
         feats_lens = torch.as_tensor([feat_visual.shape[-1] for feat_visual in feats_visual])
         max_len = feats_lens.max(0).values.item() 
+
+        ###m:
+        # adding another key to the video_list dict which call 'scores'. 1 for features inside the segment and 0 for outside the segment
+        for idx, video in enumerate(video_list):
+            video_list[idx]['m_scores'] = torch.zeros(video['feats']['visual'].shape[-1])
+            video_list[idx]['m_cls_labels_feats'] = torch.zeros(video['feats']['visual'].shape[-1], self.num_classes)
+            video_list[idx]['m_start_end'] = []
+            video_list[idx]['m_label'] = torch.zeros(video['feats']['visual'].shape[-1])
+            for seg, label in zip(video['segments'], video['labels']):
+                # each 1.28 seconds is one feature 
+                # see the start and end time of the segment and convert it to the feature index
+                start_idx = torch.div(seg[0],1.28).int()
+                end_idx = torch.div(seg[1],1.28).int()
+                video_list[idx]['m_start_end'].extend(list(range(start_idx, end_idx+1)))
+                video_list[idx]['m_scores'][start_idx:end_idx] = 1
+                video_list[idx]['m_cls_labels_feats'][start_idx:end_idx] = torch.nn.functional.one_hot(label, self.num_classes).float()
+            video_list[idx]['m_start_end'] = list(set(video_list[idx]['m_start_end']))
+            m_start_end = torch.zeros(video['feats']['visual'].shape[-1])
+            m_start_end[video_list[idx]['m_start_end']] = 1
+            video_list[idx]['m_start_end'] = m_start_end
+        scores = [x['m_scores'] for x in video_list]
+        start_end_idx = [x['m_start_end'] for x in video_list]
+        m_labels = [x['m_cls_labels_feats'] for x in video_list]
+
+        ###
 
         if self.training:
             assert max_len <= self.max_seq_len, "Input length must be smaller than max_seq_len during training"
@@ -436,9 +562,19 @@ class PtTransformer(nn.Module):
         # batch input shape B, C, T->visual
         batch_shape_visual = [len(feats_visual), feats_visual[0].shape[0], max_len]
         batched_inputs_visual = feats_visual[0].new_full(batch_shape_visual, padding_val)
+        batched_scores = scores[0].new_full([len(scores), max_len], padding_val)
+        batched_start_end_index = start_end_idx[0].new_full([len(start_end_idx), max_len], padding_val)
+        batched_m_labels = m_labels[0].new_full([len(m_labels), max_len, self.num_classes], padding_val)
         for feat_visual, pad_feat_visual in zip(feats_visual, batched_inputs_visual):
             pad_feat_visual[..., :feat_visual.shape[-1]].copy_(feat_visual)
+        for m_label, pad_m_label in zip(m_labels, batched_m_labels):
+            pad_m_label[:m_label.shape[0]].copy_(m_label)
 
+        ###m:
+        for score, start_end, pad_score, pad_start_end in zip(scores, start_end_idx, batched_scores, batched_start_end_index):
+            pad_score[:score.shape[-1]].copy_(score)
+            pad_start_end[:start_end.shape[-1]].copy_(start_end)
+        ###
         # audio 
         batch_shape_audio = [len(feats_audio), feats_audio[0].shape[0], max_len]
         batched_inputs_audio = feats_audio[0].new_full(batch_shape_audio, padding_val)
@@ -448,31 +584,43 @@ class PtTransformer(nn.Module):
         # generate the mask 
         batched_masks = torch.arange(max_len)[None, :] < feats_lens[:, None]
         # push to device
-        batched_inputs_visual = batched_inputs_visual.to(self.device)
-        batched_inputs_audio = batched_inputs_audio.to(self.device)
+        device = feats_visual[0].device
+        batched_inputs_visual = batched_inputs_visual.to(device)
+        batched_inputs_audio = batched_inputs_audio.to(device)
+        batched_scores = batched_scores.to(device)
+        batched_start_end_index = batched_start_end_index.to(device)
+        batched_m_labels = batched_m_labels.to(device)
         
-        batched_masks = batched_masks.unsqueeze(1).to(self.device)
+        batched_masks = batched_masks.unsqueeze(1).to(device)
 
-        return batched_inputs_visual, batched_inputs_audio, batched_masks
+        return batched_inputs_visual, batched_inputs_audio, batched_masks, batched_scores, batched_start_end_index, batched_m_labels
 
     def losses(
         self, fpn_masks,
         out_cls_logits, out_offsets,
-        gt_cls_labels, gt_offsets
+        gt_cls_labels, gt_offsets, 
+        contrastive_pairs
     ):
         # fpn_masks, out_*: F (List) [B, T_i, C]
         # gt_* : B (list) [F T, C]
         # fpn_masks -> (B, FT)
         valid_mask = torch.cat(fpn_masks, dim=1)
 
+        ###m:inter and inta contrastive loss
+        inter_loss, intra_loss = self.contrastive_losses(contrastive_pairs)
+        
+        ###
+
         # 1. classification loss
         # stack the list -> (B, FT) -> (# Valid, )
-        gt_cls = torch.stack(gt_cls_labels)
+        # gt_cls = torch.stack(gt_cls_labels)
+        gt_cls = gt_cls_labels
         pos_mask = torch.logical_and((gt_cls.sum(-1) > 0), valid_mask)
         
         # cat the predicted offsets -> (B, FT, 2 (xC)) -> # (#Pos, 2 (xC))
         pred_offsets = torch.cat(out_offsets, dim=1)[pos_mask] 
-        gt_offsets = torch.stack(gt_offsets)[pos_mask] 
+        # gt_offsets = torch.stack(gt_offsets)[pos_mask]
+        gt_offsets = gt_offsets[pos_mask] 
 
         # update the loss normalizer
         num_pos = pos_mask.sum().item()
@@ -514,10 +662,17 @@ class PtTransformer(nn.Module):
             loss_weight = cls_loss.detach() / max(reg_loss.item(), 0.01)
 
         # return a dict of losses
-        final_loss = cls_loss + reg_loss * loss_weight
+        final_loss = cls_loss + reg_loss * loss_weight\
+                    + inter_loss* self.inter_contr_weight + intra_loss* self.intra_contr_weight\
+                        + contrastive_pairs['score_loss_video']* self.score_V_weight + contrastive_pairs['score_loss_text']* self.score_T_weight
         return {'cls_loss'   : cls_loss,
-                'reg_loss'   : reg_loss,
-                'final_loss' : final_loss}
+                'reg_loss'   : reg_loss * loss_weight,
+                'final_loss' : final_loss, 
+                'inter_contr_loss' : inter_loss * self.inter_contr_weight,
+                'intra_contr_loss' : intra_loss * self.intra_contr_weight, 
+                'score_loss_video' : contrastive_pairs['score_loss_video'] * self.score_V_weight,
+                'score_loss_audio' : contrastive_pairs['score_loss_text'] * self.score_T_weight
+                }
 
     @torch.no_grad()
     def inference(
@@ -532,12 +687,21 @@ class PtTransformer(nn.Module):
         results = []
 
         # 1: gather video meta information
-        vid_idxs = [x['video_id'] for x in video_list]
-        vid_fps = [x['fps'] for x in video_list]
-        vid_lens = [x['duration'] for x in video_list]
-        vid_ft_stride = [x['feat_stride'] for x in video_list]
-        vid_ft_nframes = [x['feat_num_frames'] for x in video_list]
-        vid_points = [x['points'] for x in video_list]
+        # vid_idxs = [x['video_id'] for x in video_list]
+        # vid_fps = [x['fps'] for x in video_list]
+        # vid_lens = [x['duration'] for x in video_list]
+        # vid_ft_stride = [x['feat_stride'] for x in video_list]
+        # vid_ft_nframes = [x['feat_num_frames'] for x in video_list]
+        # vid_points = [x['points'] for x in video_list]
+        vid_idxs = video_list['video_id']
+        vid_fps = video_list['fps']
+        vid_lens = video_list['duration']
+        vid_ft_stride = video_list['feat_stride']
+        vid_ft_nframes = video_list['feat_num_frames']
+        vid_points = [
+            [video_list['points'][j][i] for j in range(len(video_list['points']))]
+            for i in range(video_list['points'][0].shape[0])
+        ]
 
         # 2: inference on each single video and gather the results
         # upto this point, all results use timestamps defined on feature grids
@@ -655,9 +819,12 @@ class PtTransformer(nn.Module):
             stride = results_per_vid['feat_stride']
             nframes = results_per_vid['feat_num_frames']
             # 1: unpack the results and move to CPU
-            segs = results_per_vid['segments'].detach().cpu()
-            scores = results_per_vid['scores'].detach().cpu()
-            labels = results_per_vid['labels'].detach().cpu()
+            # segs = results_per_vid['segments'].detach().cpu()
+            # scores = results_per_vid['scores'].detach().cpu()
+            # labels = results_per_vid['labels'].detach().cpu()
+            segs = results_per_vid['segments']
+            scores = results_per_vid['scores']
+            labels = results_per_vid['labels']
             if self.test_nms_method != 'none':
                 # 2: batched nms (only implemented on CPU)
                 segs, scores, labels = batched_nms(
@@ -677,11 +844,21 @@ class PtTransformer(nn.Module):
                 segs[segs<=0.0] *= 0.0
                 segs[segs>=vlen] = segs[segs>=vlen] * 0.0 + vlen
             # 4: repack the results
+            device = results_per_vid['segments'].device
             processed_results.append(
-                {'video_id' : vidx,
-                 'segments' : segs,
-                 'scores'   : scores,
-                 'labels'   : labels}
+                {
+                    # 'video_id' : vidx,
+                    'segments' : segs.unsqueeze(0).to(device),
+                    'scores'   : scores.unsqueeze(0).to(device),
+                    'labels'   : labels.unsqueeze(0).to(device),
+                    }
             )
+
+        # stack the results
+        processed_results = {
+            'segments' : torch.cat([x['segments'] for x in processed_results], dim=0),
+            'scores'   : torch.cat([x['scores'] for x in processed_results], dim=0),
+            'labels'   : torch.cat([x['labels'] for x in processed_results], dim=0),
+        }
 
         return processed_results

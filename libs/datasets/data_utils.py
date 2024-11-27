@@ -119,3 +119,111 @@ def truncate_feats(
     data_dict['labels'] = data_dict['labels'][seg_idx].clone()
 
     return data_dict
+
+def collate_fcn(video_list, num_classes, max_seq_len, padding_val=0, training=True, max_div_factor=1):
+    """
+    Collate function for dataloader
+    """
+    # deep copy the batch
+    feats_visual = [x['feats']['visual'] for x in video_list]
+    feats_audio = [x['feats']['audio'] for x in video_list]
+    gt_offsets = [x['gt_offsets'] for x in video_list]
+    gt_cls_labels = [x['gt_cls_labels'] for x in video_list]
+    video_id = [x['video_id'] for x in video_list]
+    fps = [x['fps'] for x in video_list]
+    duration = [x['duration'] for x in video_list]
+    feat_stride = [x['feat_stride'] for x in video_list]
+    feat_num_frames = [x['feat_num_frames'] for x in video_list]
+    points = [x['points'] for x in video_list]
+    feats_lens = torch.as_tensor([feat_visual.shape[-1] for feat_visual in feats_visual])
+    max_len = feats_lens.max(0).values.item() 
+
+    ###m:
+    # adding another key to the video_list dict which call 'scores'. 1 for features inside the segment and 0 for outside the segment
+    for idx, video in enumerate(video_list):
+        video_list[idx]['m_scores'] = torch.zeros(video['feats']['visual'].shape[-1])
+        video_list[idx]['m_cls_labels_feats'] = torch.zeros(video['feats']['visual'].shape[-1], num_classes)
+        video_list[idx]['m_start_end'] = []
+        video_list[idx]['m_label'] = torch.zeros(video['feats']['visual'].shape[-1])
+        for seg, label in zip(video['segments'], video['labels']):
+            # each 1.28 seconds is one feature 
+            # see the start and end time of the segment and convert it to the feature index
+            start_idx = torch.div(seg[0],1.28).int()
+            end_idx = torch.div(seg[1],1.28).int()
+            video_list[idx]['m_start_end'].extend(list(range(start_idx, end_idx+1)))
+            video_list[idx]['m_scores'][start_idx:end_idx] = 1
+            video_list[idx]['m_cls_labels_feats'][start_idx:end_idx] = torch.nn.functional.one_hot(label, num_classes).float()
+        video_list[idx]['m_start_end'] = list(set(video_list[idx]['m_start_end']))
+        m_start_end = torch.zeros(video['feats']['visual'].shape[-1])
+        m_start_end[video_list[idx]['m_start_end']] = 1
+        video_list[idx]['m_start_end'] = m_start_end
+    scores = [x['m_scores'] for x in video_list]
+    start_end_idx = [x['m_start_end'] for x in video_list]
+    m_labels = [x['m_cls_labels_feats'] for x in video_list]
+
+    ###
+
+    if training:
+        assert max_len <= max_seq_len, "Input length must be smaller than max_seq_len during training"
+        # set max_len to self.max_seq_len
+        max_len = max_seq_len
+    else:
+        if max_len <= max_seq_len:
+            max_len = max_seq_len
+        else:
+            # pad the input to the next divisible size
+            stride = max_div_factor
+            max_len = (max_len + (stride - 1)) // stride * stride
+
+    # batch input shape B, C, T->visual
+    batch_shape_visual = [len(feats_visual), feats_visual[0].shape[0], max_len]
+    batched_inputs_visual = feats_visual[0].new_full(batch_shape_visual, padding_val)
+    batched_scores = scores[0].new_full([len(scores), max_len], padding_val)
+    batched_start_end_index = start_end_idx[0].new_full([len(start_end_idx), max_len], padding_val)
+    batched_m_labels = m_labels[0].new_full([len(m_labels), max_len, num_classes], padding_val)
+    for feat_visual, pad_feat_visual in zip(feats_visual, batched_inputs_visual):
+        pad_feat_visual[..., :feat_visual.shape[-1]].copy_(feat_visual)
+    for m_label, pad_m_label in zip(m_labels, batched_m_labels):
+        pad_m_label[:m_label.shape[0]].copy_(m_label)
+
+    ###m:
+    for score, start_end, pad_score, pad_start_end in zip(scores, start_end_idx, batched_scores, batched_start_end_index):
+        pad_score[:score.shape[-1]].copy_(score)
+        pad_start_end[:start_end.shape[-1]].copy_(start_end)
+    ###
+    # audio 
+    batch_shape_audio = [len(feats_audio), feats_audio[0].shape[0], max_len]
+    batched_inputs_audio = feats_audio[0].new_full(batch_shape_audio, padding_val)
+    for feat_audio, pad_feat_audio in zip(feats_audio, batched_inputs_audio):
+        pad_feat_audio[..., :feat_audio.shape[-1]].copy_(feat_audio) 
+
+    # generate the mask 
+    batched_masks = torch.arange(max_len)[None, :] < feats_lens[:, None]
+    
+    batched_masks = batched_masks.unsqueeze(1)
+    batched_gts = torch.stack(gt_offsets, dim=0)
+    batched_cls_labels = torch.stack(gt_cls_labels, dim=0)
+    batched_video_id = video_id
+    batched_fps = fps
+    batched_duration = duration
+    batched_feat_stride = feat_stride
+    batched_feat_num_frames = feat_num_frames
+    batched_points = [torch.stack([points[i][j] for i in range(len(points))], dim=0) for j in range(len(points[0]))]
+
+    # return batched_inputs_visual, batched_inputs_audio, batched_masks, batched_scores, batched_start_end_index, batched_m_labels
+    return {
+        'visual': batched_inputs_visual,
+        'audio': batched_inputs_audio,
+        'mask': batched_masks,
+        'scores': batched_scores,
+        'start_end': batched_start_end_index,
+        'm_labels': batched_m_labels,
+        'gt_offsets': batched_gts,
+        'gt_cls_labels': batched_cls_labels,
+        'video_id': batched_video_id,
+        'fps': batched_fps,
+        'duration': batched_duration,
+        'feat_stride': batched_feat_stride,
+        'feat_num_frames': batched_feat_num_frames,
+        'points': batched_points,
+    }

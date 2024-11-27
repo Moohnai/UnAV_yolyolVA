@@ -3,6 +3,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch import Tensor
+import numpy as np
+
 
 from .models import register_multimodal_backbone
 from .blocks import (get_sinusoid_encoding, TransformerBlock,  MaskedMHCA,
@@ -10,8 +12,11 @@ from .blocks import (get_sinusoid_encoding, TransformerBlock,  MaskedMHCA,
 from mmengine.model import BaseModule
 # from mmcv.cnn import ConvModule, DepthwiseSeparableConvModule, Linear
 # from mmdet.utils import ConfigType, OptConfigType, OptMultiConfig
- 
+  
+from scipy import ndimage
+from .losses import sigmoid_focal_loss
 
+device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
 
         ########m: define downsampling and normalization class
 class Downsample_pyramid_levels(nn.Module):
@@ -772,8 +777,6 @@ class ConvTransformerBackbone(nn.Module):
             x_A, mask_A = self.self_att_A[idx](x_A, x_A, mask_A)
 
         
- 
-            
         ########### adding yolo-world fusion module with down-sampling ###########
         x_V_org = x_V
         mask_V_org = mask_V
@@ -947,8 +950,11 @@ class Alignment(nn.Module):
                  dropout_fc=0.0,
                  dropout_attn=0.0,
                  num_layers=2,
+                num_classes=100,
                 ):
         super().__init__()    
+
+        self.num_classes = num_classes
 
         self.proj_fc_video = nn.Sequential(
                                 nn.Linear(video_dim, num_hidden, bias=True),
@@ -981,7 +987,12 @@ class Alignment(nn.Module):
             nn.Dropout(dropout_fc),
             nn.LayerNorm(num_hidden),
         )
-        # self.fc_video_cls = nn.Linear(num_hidden, 1)
+        # self.fc_video_score = nn.Linear(num_hidden, 1)
+        self.fc_video_score = nn.Conv1d(num_hidden, 1, 1, bias=True)
+        ###m:
+        self.fc_video_cls = nn.Linear(num_hidden, self.num_classes)
+        
+        ###
         # self.fc_video_loc = nn.Linear(num_hidden, 2)
         # self.fc_video_ctr = nn.Linear(num_hidden, 1)
 
@@ -991,9 +1002,13 @@ class Alignment(nn.Module):
             nn.Dropout(dropout_fc),
             nn.LayerNorm(num_hidden),
         )
-        self.fc_text_cls = nn.Linear(num_hidden, 1)
-        self.fc_text_loc = nn.Linear(num_hidden, 2)
-        self.fc_text_ctr = nn.Linear(num_hidden, 1)
+        # self.fc_text_score = nn.Linear(num_hidden, 1)
+        self.fc_text_score = nn.Conv1d(num_hidden, 1, 1, bias=True)
+        ###m:
+        self.fc_text_cls = nn.Linear(num_hidden, self.num_classes)
+        ###
+        # self.fc_text_loc = nn.Linear(num_hidden, 2)
+        # self.fc_text_ctr = nn.Linear(num_hidden, 1)
 
         self.num_layers = num_layers
         
@@ -1027,13 +1042,67 @@ class Alignment(nn.Module):
             video_to_text_mask[start_frame: end_frame, j] = 1
             text_to_video_mask[j, start_frame : end_frame] = 1
         return video_to_text_mask, text_to_video_mask
+    
+    ###m: inter contrasrive loss across a batch
+    # def bidirectional_video_audio_clip_loss(self, vid_cls, audio_cls):
 
-    #
+    
+    def select_contrastive_embedding(self, score, embedding, mask, label, cls_prd, cls_gt):
+        B = score.shape[0]
+        
+        key_embedding_list = []
+        nonkey_embedding_list = []
+
+        #m:
+        ratio = 8
+        #
+        for i in range(B):
+            length = torch.sum(mask[i].to(torch.long))
+            key_embedding_num = max(1, torch.div(length, ratio))
+            nonkey_embedding_num = max(1, torch.div(length, ratio))
+        
+            key_embedding_index = label[i].to(torch.bool)
+            key_embedding = embedding[i, key_embedding_index]
+            key_label = cls_gt[i, key_embedding_index][0]
+
+            key_embedding_index_expand = ndimage.binary_dilation(label[i].cpu().detach().numpy(), iterations=4).astype(np.int32)
+            key_embedding_index_expand = torch.from_numpy(key_embedding_index_expand)
+            
+            score_i = score[i, :length]
+            ###m
+            # score_i = torch.sigmoid(score_i)
+            ###
+            score_i = F.softmax(score_i, dim=-1)
+        
+            _, idx_DESC = score_i.sort(descending=True)
+            
+            non_key_embedding_index = []
+            for j in range(idx_DESC.shape[0]):
+                if key_embedding_index_expand[idx_DESC[j]] == 0:
+                # if key_embedding_index_expand[idx_DESC[j]] == 0 and score_i[idx_DESC[j]] > 0.5:
+                    candiate_label = cls_prd[i, idx_DESC[j].item()]
+                    if candiate_label != key_label:
+                        continue
+                    non_key_embedding_index.append(idx_DESC[j].item())
+                if len(non_key_embedding_index) >= nonkey_embedding_num:
+                    break
+            
+            nonkey_embedding = embedding[i, non_key_embedding_index]
+
+            key_embedding_list.append(key_embedding)
+            nonkey_embedding_list.append(nonkey_embedding)
+        return key_embedding_list, nonkey_embedding_list
+         
+
     def forward(self, **kwargs):
         video_list = kwargs['video']
         text_list = kwargs['text']
         mask_video_list = kwargs['mask_video']
         mask_text_list = kwargs['mask_text']
+        score_gt_index = kwargs['m_start_end']
+        score_gt = kwargs['m_scores_gt']
+        label_gt = kwargs['m_labels']
+
         # video_to_text_mask_list = kwargs['video_to_text_mask_list'] # time correspondence mask between video and text
         # text_to_video_mask_list = kwargs['text_to_video_mask_list'] # time correspondence mask between text and video
     
@@ -1041,6 +1110,7 @@ class Alignment(nn.Module):
         new_text_list = []
         cls_video_list = []
         cls_text_list = []
+
         for video, text, mask_video, mask_text in zip(video_list, text_list, mask_video_list, mask_text_list):
             video = video.transpose(1, 2)
             text = text.transpose(1, 2)
@@ -1091,17 +1161,82 @@ class Alignment(nn.Module):
                 fused = torch.cat([video, text], dim=1)
             cls_video, video = torch.split(video, [1, N_video-1], dim=1)
             cls_text, text = torch.split(text, [1, N_text-1], dim=1)
-            
+
             video = self.norm_video(residual_video + video)
             text = self.norm_text(residual_text + text)
-            video = self.fc_video(video).transpose(1, 2)
-            text = self.fc_text(text).transpose(1, 2)
+            video = self.fc_video(video)
+            text = self.fc_text(text)
 
-            new_video_list.append(video)
-            new_text_list.append(text)
+            new_video_list.append(video.transpose(1, 2))
+            new_text_list.append(text.transpose(1, 2))
 
-            # cls_video_list.append(cls_video)
-            # cls_text_list.append(cls_text)
+            cls_video_list.append(cls_video)
+            cls_text_list.append(cls_text)
 
-        return new_video_list, new_text_list
-        # return cls_video_list, cls_text_list
+            mask_video = mask_video[:, 1:]
+            mask_text = mask_text[:, 1:]
+
+            # pred_video_score = self.fc_video_score(video).squeeze(-1) #[B, N]
+            pred_video_score = self.fc_video_score(video.permute(0, 2, 1)).squeeze(1) #[B, N]
+            score_loss_video = focal_loss_score(pred_video_score[mask_video], score_gt[mask_video], reduction='sum') #[32,224]
+            pred_seg_video_cls = self.fc_video_cls(video).squeeze(-1) #[B, N]
+            cls_seg_loss_video = sigmoid_focal_loss(pred_seg_video_cls[mask_video], label_gt[mask_video], reduction='sum')
+            # pred_text_score = self.fc_text_score(text).squeeze(-1) #[B, N]
+            pred_text_score = self.fc_text_score(text.permute(0, 2, 1)).squeeze(1) #[B, N]
+            score_loss_text = focal_loss_score(pred_text_score[mask_text], score_gt[mask_text], reduction='sum')
+            pred_seg_text_cls = self.fc_text_cls(text).squeeze(-1) #[B, N]
+            cls_seg_loss_text = sigmoid_focal_loss(pred_seg_text_cls[mask_text], label_gt[mask_text], reduction='sum')
+
+            # select contrastive pairs for the intra-sample constrastive loss
+            key_video_list, nonkey_video_list = self.select_contrastive_embedding(pred_video_score, video, mask_video[:, 1:], score_gt_index, torch.argmax(pred_seg_video_cls, dim=2), torch.argmax(label_gt, dim=2))
+            key_text_list, nonkey_text_list = self.select_contrastive_embedding(pred_text_score, text, mask_text[:, 1:], score_gt_index, torch.argmax(pred_seg_text_cls, dim=2), torch.argmax(label_gt, dim=2))
+            
+            contrastive_pairs = {
+                'key_video_list': key_video_list,
+                'nonkey_video_list': nonkey_video_list,
+                'key_text_list': key_text_list,
+                'nonkey_text_list': nonkey_text_list,
+                'cls_video': cls_video,
+                'cls_text': cls_text,
+                'score_loss_video': score_loss_video,
+                'score_loss_text': score_loss_text,
+            }
+
+        return new_video_list, new_text_list, contrastive_pairs
+
+
+def focal_loss_score(pred: torch.Tensor,
+               target: torch.Tensor,
+               alpha: float = 0.25,
+               gamma: float = 2,
+               reduction: str = 'sum'
+               ) -> torch.Tensor:
+    """Compute focal loss for binary classification.
+        FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+
+    :param pred: Predicted confidence. Sized [B, N, D].
+    :param target: Ground truth target. Sized [B, N].
+    :param alpha: Alpha parameter in focal loss.
+    :param gamma: Gamma parameter in focal loss.
+    :param reduction: Aggregation type. Choose from (sum, mean, none).
+    :return: Scalar loss value.
+    """
+    # B, num_classes = pred.shape
+    # t = F.one_hot(target, num_classes)
+    t = target
+    pred = torch.sigmoid(pred)
+    p_t = pred * t + (1 - pred) * (1 - t)
+    alpha_t = alpha * t + (1 - alpha) * (1 - t)
+    fl = -alpha_t * (1 - p_t).pow(gamma) * p_t.clamp(min=1e-7).log()
+
+    ## TODO: update the sum to mean aross the batch axis
+    if reduction == 'sum':
+        fl = fl.sum()
+    elif reduction == 'mean':
+        fl = fl.mean()
+    elif reduction == 'none':
+        pass
+    else:
+        raise ValueError(f'Invalid reduction mode {reduction}')
+
+    return fl

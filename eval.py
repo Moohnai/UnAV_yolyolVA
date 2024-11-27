@@ -110,7 +110,7 @@ if __name__ == '__main__':
       description='Train a point-based transformer for action localization')
     parser.add_argument('--config', type=str, default='../../home/mona/UnAV_yolyolVA/configs/avel_unav100.yaml',
                         help='path to a config file')
-    parser.add_argument('--ckpt', type=str, default='../../home/mona/UnAV_yolyolVA/checkpoints/UnAv_yoyol_VA_w_temporalD/model_best.pth.tar',
+    parser.add_argument('--ckpt', type=str, default='/home/mona/ckpt/avel_unav100_DEL_reg=1_others=0.02,0.02,0.0001,0.0001_Harder/model_best.pth.tar',
                         help='path to a checkpoint')
     parser.add_argument('--topk', default=-1, type=int,
                         help='max number of output actions (default: -1)')
