@@ -104,6 +104,7 @@ def ctr_diou_loss_1d(
     # smallest enclosing box
     lc = torch.max(lp, lg)
     rc = torch.max(rp, rg)
+    
     len_c = lc + rc
 
     # offset between centers

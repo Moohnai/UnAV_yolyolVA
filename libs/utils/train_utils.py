@@ -372,7 +372,7 @@ def train_one_epoch(
             'inter_contr_loss':losses['inter_contr_loss'],
             'intra_contr_loss':losses['intra_contr_loss'],
             'score_loss_video':losses['score_loss_video'],
-            'score_loss_text':losses['score_loss_text']}
+            'score_loss_audio':losses['score_loss_audio']}
 
 
 def valid_one_epoch(

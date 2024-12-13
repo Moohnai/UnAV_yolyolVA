@@ -6,8 +6,8 @@ DEFAULTS = {
     "init_rand_seed": 1234567891, 
     # dataset loader, specify the dataset here
     "dataset_name": "unav100",
-    "devices": ['cuda:0', 'cuda:1', 'cuda:2', 'cuda:3'], # default: multi gpu
-    # "devices": ['cuda:0'], # default: single gpu
+    # "devices": ['cuda:0', 'cuda:1', 'cuda:2', 'cuda:3'], # default: multi gpu
+    "devices": ['cuda:1'], # default: single gpu
     "train_split": ('train', ),
     "val_split": ('validation', ),
     "test_split": ('test', ),

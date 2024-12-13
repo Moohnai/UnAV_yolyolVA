@@ -388,18 +388,34 @@ class fusion_module(nn.Module):
                         )
 
         self.upsample_layers = nn.ModuleList()
-        self.upsample_layers.append(nn.Upsample(scale_factor=self.scale_factor, mode='nearest'))
-        self.upsample_layers.append(nn.Upsample(scale_factor=self.scale_factor, mode='nearest'))
-        self.upsample_layers.append(nn.Upsample(scale_factor=self.scale_factor, mode='nearest'))
-        self.upsample_layers.append(nn.Upsample(scale_factor=self.scale_factor, mode='nearest'))
-        self.upsample_layers.append(nn.Upsample(scale_factor=self.scale_factor, mode='nearest'))
-        self.downsample_layers = nn.ModuleList()
-        self.downsample_layers.append(downsample(n_embd, scale_factor=self.scale_factor))
-        self.downsample_layers.append(downsample(n_embd, scale_factor=self.scale_factor))
-        self.downsample_layers.append(downsample(n_embd, scale_factor=self.scale_factor))
-        self.downsample_layers.append(downsample(n_embd, scale_factor=self.scale_factor))
-        self.downsample_layers.append(downsample(n_embd, scale_factor=self.scale_factor))
+        upscaler = nn.Upsample(scale_factor=self.scale_factor, mode='nearest')
+        # self.upsample_layers.append(nn.Upsample(scale_factor=self.scale_factor, mode='nearest'))
+        # self.upsample_layers.append(nn.Upsample(scale_factor=self.scale_factor, mode='nearest'))
+        # self.upsample_layers.append(nn.Upsample(scale_factor=self.scale_factor, mode='nearest'))
+        # self.upsample_layers.append(nn.Upsample(scale_factor=self.scale_factor, mode='nearest'))
+        # self.upsample_layers.append(nn.Upsample(scale_factor=self.scale_factor, mode='nearest'))
+        for i in range(5):
+            self.upsample_layers.append(upscaler)
 
+        downscaler = downsample(n_embd, scale_factor=self.scale_factor)
+        self.downsample_layers = nn.ModuleList()
+        # self.downsample_layers.append(downsample(n_embd, scale_factor=self.scale_factor))
+        # self.downsample_layers.append(downsample(n_embd, scale_factor=self.scale_factor))
+        # self.downsample_layers.append(downsample(n_embd, scale_factor=self.scale_factor))
+        # self.downsample_layers.append(downsample(n_embd, scale_factor=self.scale_factor))
+        # self.downsample_layers.append(downsample(n_embd, scale_factor=self.scale_factor))
+        for i in range(5):
+            self.downsample_layers.append(downscaler)
+
+        # top_down_layer = MaxSigmoidCSPLayerWithTwoConv(
+        #     in_channels=1024, #1280
+        #     out_channels=512, # 640
+        #     guide_channels=224, # 512
+        #     embed_channels=256, # 320
+        #     num_heads=8 , # 10
+        #     expand_ratio= 0.5,
+        #     num_blocks=3, # 3
+        # )
         self.top_down_layers = nn.ModuleList()
         self.top_down_layers.append(MaxSigmoidCSPLayerWithTwoConv(
             in_channels=1024, #1280
@@ -449,7 +465,18 @@ class fusion_module(nn.Module):
             expand_ratio= 0.5,
             num_blocks=3, # 3
         ))
+        # for i in range(5):
+        #     self.top_down_layers.append(top_down_layer)
 
+        # bottom_up_layer = MaxSigmoidCSPLayerWithTwoConv(
+        #     in_channels=1024, #1280
+        #     out_channels=512, # 640
+        #     guide_channels=224, # 512
+        #     embed_channels=256, # 320
+        #     num_heads=8 , # 10
+        #     expand_ratio= 0.5,
+        #     num_blocks=3, # 3
+        # )
         self.bottom_up_layers = nn.ModuleList()
         self.bottom_up_layers.append(MaxSigmoidCSPLayerWithTwoConv(
             in_channels=1024, #1280
@@ -498,6 +525,8 @@ class fusion_module(nn.Module):
             expand_ratio= 0.5,
             num_blocks=3, # 3
         ))
+        # for i in range(5):
+        #     self.bottom_up_layers.append(bottom_up_layer)
         
         self.out_layers = nn.ModuleList()
         for i in range(len(self.in_channels)):
@@ -618,7 +647,8 @@ class ConvTransformerBackbone(nn.Module):
         assert len(arch) == 3
         self.arch = arch
         self.max_len = max_len
-        self.relu = nn.ReLU(inplace=True)
+        # self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.GELU()
         self.scale_factor = scale_factor
         self.use_abs_pe = use_abs_pe
 

@@ -21,7 +21,7 @@ class NCE(nn.Module):
         super(NCE, self).__init__()
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         
-    def forward(self, q, k, neg, device='cuda:0'):
+    def forward(self, q, k, neg, device):
         q = F.normalize(q, dim=1) #[1, C]
         k = F.normalize(k, dim=1) #[1, C]
         neg = F.normalize(neg, dim=1) #[T, C]
@@ -38,13 +38,17 @@ class Dual_Contrastive_Loss(nn.Module):
     def __init__(self, args=None):
         super().__init__()
         self.logit_scale_inter = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+
         
         self.NCE_video = NCE()
         self.NCE_text = NCE()
+
+    def device(self):
+        return list(set(p.device for name, p in self.named_parameters()))[0]
         
-    def forward(self, contrastive_pairs):
+    def forward(self, contrastive_pairs, reduce='sum'):
         if len(contrastive_pairs) == 0:
-            return torch.zeros(1).cuda(), torch.zeros(1).cuda()
+            return torch.zeros(1).to(self.device), torch.zeros(1).to(self.device)
         cls_video = contrastive_pairs['cls_video']
         cls_text = contrastive_pairs['cls_text']
         key_video_list = contrastive_pairs['key_video_list']
@@ -64,8 +68,8 @@ class Dual_Contrastive_Loss(nn.Module):
         logits_per_text = logits_per_video.t() #[B, B]
         
         target = torch.arange(B).to(device)
-        inter_contrastive_loss_video = F.cross_entropy(logits_per_video, target)
-        inter_contrastive_loss_text = F.cross_entropy(logits_per_text, target)
+        inter_contrastive_loss_video = F.cross_entropy(logits_per_video, target, reduction=reduce)
+        inter_contrastive_loss_text = F.cross_entropy(logits_per_text, target, reduction=reduce)
         inter_contrastive_loss = (inter_contrastive_loss_video + inter_contrastive_loss_text) / 2
         
         ########## Intra-Sample Contrastive Loss ##########
@@ -84,7 +88,12 @@ class Dual_Contrastive_Loss(nn.Module):
                 device
             )
             intra_contrastive_loss += (intra_contrastive_loss_video + intra_contrastive_loss_text) / 2
-        intra_contrastive_loss /= B
+        if reduce == 'mean':
+            inter_contrastive_loss /= B
+        elif reduce == 'sum':
+            intra_contrastive_loss /= B
+        else:
+            raise ValueError('Unknown reduction type')
         
         return inter_contrastive_loss, intra_contrastive_loss
     
@@ -599,15 +608,17 @@ class PtTransformer(nn.Module):
         self, fpn_masks,
         out_cls_logits, out_offsets,
         gt_cls_labels, gt_offsets, 
-        contrastive_pairs
+        contrastive_pairs,
+        reduce='sum',
     ):
+        B = len(fpn_masks)
         # fpn_masks, out_*: F (List) [B, T_i, C]
         # gt_* : B (list) [F T, C]
         # fpn_masks -> (B, FT)
         valid_mask = torch.cat(fpn_masks, dim=1)
 
         ###m:inter and inta contrastive loss
-        inter_loss, intra_loss = self.contrastive_losses(contrastive_pairs)
+        inter_loss, intra_loss = self.contrastive_losses(contrastive_pairs, reduce=reduce)
         
         ###
 
@@ -639,7 +650,7 @@ class PtTransformer(nn.Module):
         cls_loss = sigmoid_focal_loss(
             torch.cat(out_cls_logits, dim=1)[valid_mask],
             gt_target,
-            reduction='sum'
+            reduction=reduce
         )
         cls_loss /= self.loss_normalizer
 
@@ -651,7 +662,7 @@ class PtTransformer(nn.Module):
             reg_loss = ctr_diou_loss_1d(
                 pred_offsets,
                 gt_offsets,
-                reduction='sum',
+                reduction=reduce,
                 class_aware=self.class_aware
             )
             reg_loss /= self.loss_normalizer
@@ -665,13 +676,13 @@ class PtTransformer(nn.Module):
         final_loss = cls_loss + reg_loss * loss_weight\
                     + inter_loss* self.inter_contr_weight + intra_loss* self.intra_contr_weight\
                         + contrastive_pairs['score_loss_video']* self.score_V_weight + contrastive_pairs['score_loss_text']* self.score_T_weight
-        return {'cls_loss'   : cls_loss,
-                'reg_loss'   : reg_loss * loss_weight,
-                'final_loss' : final_loss, 
-                'inter_contr_loss' : inter_loss * self.inter_contr_weight,
-                'intra_contr_loss' : intra_loss * self.intra_contr_weight, 
-                'score_loss_video' : contrastive_pairs['score_loss_video'] * self.score_V_weight,
-                'score_loss_audio' : contrastive_pairs['score_loss_text'] * self.score_T_weight
+        return {'cls_loss'   : cls_loss / B if reduce == 'sum' else cls_loss,
+                'reg_loss'   : (reg_loss * loss_weight) / B if reduce == 'sum' else reg_loss * loss_weight,
+                'final_loss' : final_loss / B if reduce == 'sum' else final_loss,
+                'inter_contr_loss' : (inter_loss * self.inter_contr_weight) / B if reduce == 'sum' else inter_loss * self.inter_contr_weight,
+                'intra_contr_loss' : (intra_loss * self.intra_contr_weight) / B if reduce == 'sum' else intra_loss * self.intra_contr_weight,
+                'score_loss_video' : (contrastive_pairs['score_loss_video'] * self.score_V_weight) / B if reduce == 'sum' else contrastive_pairs['score_loss_video'] * self.score_V_weight,
+                'score_loss_audio' : (contrastive_pairs['score_loss_text'] * self.score_T_weight) / B if reduce == 'sum' else contrastive_pairs['score_loss_text'] * self.score_T_weight,
                 }
 
     @torch.no_grad()

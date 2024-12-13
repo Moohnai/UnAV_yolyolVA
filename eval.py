@@ -37,7 +37,7 @@ def main(args):
 
     ### M:
     # cfg['num_workers'] = 1
-    cfg['devices'] = ['cuda:1']
+    # cfg['devices'] = ['cuda:1']
     # cfg['loader']['batch_size'] = 32
     ###
 
@@ -54,7 +54,7 @@ def main(args):
         cfg['dataset_name'], False, cfg['test_split'], **cfg['dataset']
     )
     val_loader = make_data_loader(
-        val_dataset, False, None, **cfg['loader'])
+        val_dataset, False, None, **cfg['loader'], **cfg["dataset"])
 
     """3. create model and evaluator"""
     model = make_multimodal_meta_arch(cfg['model_name'], **cfg['model'])
@@ -108,9 +108,9 @@ if __name__ == '__main__':
     # the arg parser
     parser = argparse.ArgumentParser(
       description='Train a point-based transformer for action localization')
-    parser.add_argument('--config', type=str, default='../../home/mona/UnAV_yolyolVA/configs/avel_unav100.yaml',
+    parser.add_argument('--config', type=str, default="/home/mona/UnAV_alignment_Contrastive_yolyolVA/configs/avel_unav100_eval.yaml",
                         help='path to a config file')
-    parser.add_argument('--ckpt', type=str, default='/home/mona/ckpt/avel_unav100_DEL_reg=1_others=0.02,0.02,0.0001,0.0001_Harder/model_best.pth.tar',
+    parser.add_argument('--ckpt', type=str, default='/home/mona/UnAV_alignment_Contrastive_yolyolVA/ckpt/single_gpu_40_epochs_inter_0.001_intra_1.0_score_v_0.001_score_a_0.001_batch_8_2024-12-03 21:57:10/model_best.pth.tar',
                         help='path to a checkpoint')
     parser.add_argument('--topk', default=-1, type=int,
                         help='max number of output actions (default: -1)')
